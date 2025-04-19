@@ -70,14 +70,6 @@ display_welcome() {
     echo -e "${BLUE}${BOLD}------------------------------------------------------------${RESET}"
 }
 
-# Function: Confirm installation
-confirm_proceed() {
-    read -p "${BLUE}${BOLD}[?]${RESET} Continue with installation? [Y/n]: " confirm
-    confirm="${confirm,,}"
-    [[ "$confirm" == "n" ]] && { print_message warning "Installation aborted"; exit 0; }
-    print_message success "Proceeding with installation..."
-}
-
 # Function: Install Chaotic-AUR
 install_chaotic_aur() {
     print_message info "Installing Chaotic-AUR..."
@@ -92,7 +84,13 @@ install_chaotic_aur() {
 
 # Function: Install PhotoGIMP
 install_photogimp() {
-    print_message info "Installing PhotoGIMP..."
+    if ! pacman -Q gimp &>/dev/null; then
+        print_message warning "GIMP is not installed. Skipping PhotoGIMP installation."
+        installed_components["photogimp"]="Skipped (GIMP not installed)"
+        return
+    fi
+
+    print_message info "Installing PhotoGIMP for GIMP 3.0..."
     local temp_dir=$(create_temp_dir)
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
         print_message error "Failed to download PhotoGIMP"
@@ -108,32 +106,48 @@ install_photogimp() {
     }
 
     local photogimp_config_dir
+    # Look for GIMP 3.0 config directory, fallback to any GIMP config if 3.0 not found
     if [ -d "$temp_dir/PhotoGIMP-master/GIMP/3.0" ]; then
         photogimp_config_dir="$temp_dir/PhotoGIMP-master/GIMP/3.0"
     elif [ -d "$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0" ]; then
         photogimp_config_dir="$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0"
     else
-        print_message warning "PhotoGIMP configuration directory for GIMP 3.0 not found. Skipping configuration copy."
-        rm -rf "$temp_dir"
-        installed_components["photogimp"]="Partially installed (config not applied)"
-        return
+        # Fallback to any GIMP config directory
+        photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -type d -path "*/GIMP/*" -maxdepth 3 | head -n 1)
+        if [ -z "$photogimp_config_dir" ]; then
+            print_message warning "PhotoGIMP configuration directory not found. Skipping configuration copy."
+            rm -rf "$temp_dir"
+            installed_components["photogimp"]="Partially installed (config not applied)"
+            return
+        fi
+        print_message warning "GIMP 3.0 config not found in PhotoGIMP repo. Using $photogimp_config_dir as fallback."
     fi
 
-    if [ -d "$HOME/.config/GIMP/3.0" ]; then
-        print_message info "Backing up existing GIMP configuration to ~/.config/GIMP/3.0.bak..."
-        cp -r "$HOME/.config/GIMP/3.0" "$HOME/.config/GIMP/3.0.bak"
+    # Backup existing GIMP configuration
+    local gimp_config_dir="$HOME/.config/GIMP/3.0"
+    if [ -d "$gimp_config_dir" ]; then
+        print_message info "Backing up existing GIMP configuration to $gimp_config_dir.bak..."
+        cp -r "$gimp_config_dir" "$gimp_config_dir.bak" || {
+            print_message error "Failed to backup GIMP configuration"
+            rm -rf "$temp_dir"
+            installed_components["photogimp"]="Failed"
+            return
+        }
     fi
-    mkdir -p ~/.config/GIMP/3.0
-    print_message info "Applying PhotoGIMP configuration..."
-    cp -r "$photogimp_config_dir/"* ~/.config/GIMP/3.0/ || {
+
+    # Apply PhotoGIMP configuration
+    mkdir -p "$gimp_config_dir"
+    print_message info "Applying PhotoGIMP configuration to $gimp_config_dir..."
+    cp -r "$photogimp_config_dir/"* "$gimp_config_dir/" || {
         print_message error "Failed to apply PhotoGIMP configuration"
         rm -rf "$temp_dir"
         installed_components["photogimp"]="Failed"
         return
     }
+
     rm -rf "$temp_dir"
     installed_components["photogimp"]="Installed"
-    print_message success "PhotoGIMP installed"
+    print_message success "PhotoGIMP installed and configured for GIMP 3.0"
 }
 
 # Function: Install components
@@ -223,7 +237,6 @@ main() {
     sudo -v || { print_message error "Sudo authentication failed"; exit 1; }
     display_welcome
     check_internet
-    confirm_proceed
     install_components
     display_summary
     print_message info "=== Installation Complete ==="
