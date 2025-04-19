@@ -66,7 +66,7 @@ display_welcome() {
     echo -e "${BLUE}${BOLD} Nirucon-ALPPI: Arch Linux Post-Post Install Script ${RESET}"
     echo -e "${BLUE}${BOLD}============================================================${RESET}"
     echo -e "${RED}${BOLD}Disclaimer:${RESET} Use at your own risk. No responsibility for system issues."
-    echo -e "${YELLOW}Version:${RESET} 2025-04-18 | ${YELLOW}Author:${RESET} Nicklas Rudolfsson | ${YELLOW}GitHub:${RESET} https://github.com/nirucon/nirucon-alppi"
+    echo -e "${YELLOW}Version:${RESET} 2025-04-19 | ${YELLOW}Author:${RESET} Nicklas Rudolfsson | ${YELLOW}GitHub:${RESET} https://github.com/nirucon/nirucon-alppi"
     echo -e "${BLUE}${BOLD}------------------------------------------------------------${RESET}"
 }
 
