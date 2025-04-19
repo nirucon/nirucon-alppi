@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Nirucon-ALPPI: Arch Linux Post-Post Install Script
-# Version: 2025-04-18
+# Version: 2025-04-19
 # Author: Nicklas Rudolfsson
 # GitHub: https://github.com/nirucon/nirucon-alppi
 # Email: n@rudolfsson.net
