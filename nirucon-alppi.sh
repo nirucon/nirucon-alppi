@@ -473,7 +473,7 @@ install_components() {
     local components=(
         "chaotic-aur:Additional AUR repository with precompiled packages:custom:install_chaotic_aur"
         "libreoffice-fresh:Full-featured office suite (Writer, Calc, Impress, etc.):pacman:libreoffice-fresh"
-        "libreoffice-sv:Swedish language support and spellcheck for LibreOffice:pacman:hunspell-sv"
+        "libreoffice-fresh-sv:Swedish language support and spellcheck for LibreOffice:pacman:libreoffice-fresh-sv"
         "digikam:Professional photo management and editing software:pacman:digikam"
         "gimp:GIMP image editor with PhotoGIMP customization:pacman:gimp"
         "photogimp:Customizes GIMP to resemble Photoshop (requires GIMP):custom:install_photogimp"
