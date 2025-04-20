@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # nirucon-alppi.sh - Arch Linux Post-Post Install Script
 # Date: 2025-04-20
-# Author: Original by ChatGPT, enhanced by Grok
+# Author: Nicklas Rudolfsson
 # License: MIT
 # Description:
 #   Fully automated and user-friendly Arch Linux post-post installation script.
