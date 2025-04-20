@@ -230,7 +230,15 @@ review_aur_pkgbuild() {
     local pkgbuild_file="/tmp/PKGBUILD.$pkg"
     yay -Gp "$pkg" > "$pkgbuild_file" 2>/dev/null
     if [[ -s "$pkgbuild_file" ]]; then
-        less "$pkgbuild_file"
+        if ! command -v less &>/dev/null; then
+            print_msg warn "less not found. Installing it now..."
+            sudo pacman -S --noconfirm --needed less || {
+                print_msg warn "Failed to install less, using cat to display PKGBUILD"
+                cat "$pkgbuild_file"
+            }
+        else
+            less "$pkgbuild_file"
+        fi
         read -p "Proceed with installation of $pkg? [y/N]: " answer
         [[ "$answer" =~ ^[Yy]$ ]] || return 1
     else
@@ -317,13 +325,13 @@ install_photogimp() {
     elif [[ -d "$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0" ]]; then
         photogimp_config_dir="$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0"
     else
-        photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -type d -path "*/GIMP/*" -maxdepth 3 | head -n 1)
+        photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -maxdepth 3 -type d -path "*/GIMP/*" | head -n 1)
         if [[ -z "$photogimp_config_dir" ]]; then
             print_msg warn "PhotoGIMP configuration directory not found. Skipping configuration copy."
             rm -rf "$temp_dir"
             return 1
         fi
-        print_msg warn "GIMP 3.0 config not found in PhotoGIMP repo. Using $photogimp_config_dir as fallback."
+        print_msg info "Using $photogimp_config_dir as fallback for GIMP configuration."
     fi
 
     local gimp_config_dir="$HOME/.config/GIMP/3.0"
@@ -467,11 +475,16 @@ show_menu() {
 }
 
 enable_system_optimizations() {
+    set +e
     print_msg info "Enabling system optimizations"
     read -p "Enable gamemoded service for gaming performance? [y/N]: " answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
-        sudo systemctl enable --now gamemoded
-        print_msg success "gamemoded enabled"
+        if systemctl list-units --full | grep -q gamemoded.service; then
+            sudo systemctl enable --now gamemoded
+            print_msg success "gamemoded enabled"
+        else
+            print_msg warn "gamemoded.service not found. Ensure gamemode is installed and configured."
+        fi
     else
         print_msg info "Skipping gamemoded activation"
     fi
@@ -493,6 +506,7 @@ enable_system_optimizations() {
     else
         print_msg info "Skipping irqbalance activation"
     fi
+    set -e
 }
 
 main() {
