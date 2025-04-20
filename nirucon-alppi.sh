@@ -11,8 +11,10 @@
 #     - Robust Chaotic-AUR setup with validation
 #     - Install gaming stack (Steam, Vulkan, Wine, MangoHud, Corectrl, VKBasalt, Lutris)
 #     - Install productivity apps (LibreOffice, digiKam)
-#     - Install AUR packages (PhotoGIMP, Proton-GE, linux-zen, dxvk-bin)
-#     - Optional system optimizations (ZRAM, linux-zen, gamemoded)
+#     - Install PhotoGIMP via GitHub
+#     - Install AUR packages (Proton-GE, linux-zen, dxvk-bin, goverlay)
+#     - Optional system optimizations (ZRAM, gamemoded, linux-zen)
+#     - Support for systemd-boot and GRUB for linux-zen
 #     - Safety checks for sudo, internet, disk space, system status
 #     - Package availability validation
 #     - Orphaned package cleanup and cache management
@@ -45,6 +47,7 @@ exec > >(tee -a "${LOGFILE}") 2>&1
 cleanup() {
     print_msg warn "Script interrupted, cleaning up..."
     [[ -f "/tmp/pacman.conf.tmp" ]] && rm -f /tmp/pacman.conf.tmp
+    [[ -d "/tmp/photogimp_temp" ]] && rm -rf /tmp/photogimp_temp
     print_msg info "Exiting safely"
     exit 1
 }
@@ -92,6 +95,19 @@ check_disk_space() {
         print_msg error "Insufficient disk space (${available_space} MB available, ${MIN_DISK_SPACE_MB} MB required)."
     fi
     print_msg success "Sufficient disk space available (${available_space} MB)"
+}
+
+check_bootloader() {
+    print_msg info "Checking for bootloader"
+    if [[ -f "/boot/loader/loader.conf" ]]; then
+        BOOTLOADER="systemd-boot"
+        print_msg success "Detected systemd-boot"
+    elif [[ -f "/boot/grub/grub.cfg" ]]; then
+        BOOTLOADER="grub"
+        print_msg success "Detected GRUB"
+    else
+        print_msg error "No supported bootloader (systemd-boot or GRUB) detected."
+    fi
 }
 
 backup_file() {
@@ -253,13 +269,8 @@ install_aur_pkgs() {
     print_msg info "Installing AUR packages: ${pkgs[*]}"
     local filtered_pkgs=()
     for pkg in "${pkgs[@]}"; do
-        if [[ "$pkg" == "linux-zen" ]]; then
-            read -p "Install linux-zen kernel (optimized for performance)? [y/N]: " answer
-            if [[ "$answer" =~ ^[Yy]$ ]]; then
-                review_aur_pkgbuild "$pkg" && filtered_pkgs+=("$pkg")
-            else
-                print_msg info "Skipping linux-zen installation"
-            fi
+        if [[ "$pkg" == "linux-zen" && -n "${ZEN_APPROVED:-}" ]]; then
+            filtered_pkgs+=("$pkg")
         else
             review_aur_pkgbuild "$pkg" && filtered_pkgs+=("$pkg")
         fi
@@ -272,8 +283,73 @@ install_aur_pkgs() {
     fi
 }
 
+install_photogimp() {
+    print_msg info "Installing PhotoGIMP for GIMP..."
+    if ! command -v curl &>/dev/null; then
+        print_msg warn "curl is not installed. Installing it now..."
+        sudo pacman -S --noconfirm --needed curl || print_msg error "Failed to install curl"
+    fi
+    if ! command -v unzip &>/dev/null; then
+        print_msg warn "unzip is not installed. Installing it now..."
+        sudo pacman -S --noconfirm --needed unzip || print_msg error "Failed to install unzip"
+    fi
+    if ! pacman -Q gimp &>/dev/null; then
+        print_msg warn "GIMP is not installed. Installing it now..."
+        sudo pacman -S --noconfirm --needed gimp || print_msg error "Failed to install GIMP"
+    fi
+
+    local temp_dir
+    temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temporary directory"
+    curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
+        print_msg warn "Failed to download PhotoGIMP"
+        rm -rf "$temp_dir"
+        return 1
+    }
+    unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" || {
+        print_msg warn "Failed to unzip PhotoGIMP"
+        rm -rf "$temp_dir"
+        return 1
+    }
+
+    local photogimp_config_dir
+    if [[ -d "$temp_dir/PhotoGIMP-master/GIMP/3.0" ]]; then
+        photogimp_config_dir="$temp_dir/PhotoGIMP-master/GIMP/3.0"
+    elif [[ -d "$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0" ]]; then
+        photogimp_config_dir="$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0"
+    else
+        photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -type d -path "*/GIMP/*" -maxdepth 3 | head -n 1)
+        if [[ -z "$photogimp_config_dir" ]]; then
+            print_msg warn "PhotoGIMP configuration directory not found. Skipping configuration copy."
+            rm -rf "$temp_dir"
+            return 1
+        fi
+        print_msg warn "GIMP 3.0 config not found in PhotoGIMP repo. Using $photogimp_config_dir as fallback."
+    fi
+
+    local gimp_config_dir="$HOME/.config/GIMP/3.0"
+    if [[ -d "$gimp_config_dir" ]]; then
+        print_msg info "Backing up existing GIMP configuration to $gimp_config_dir.bak..."
+        cp -r "$gimp_config_dir" "$gimp_config_dir.bak" || {
+            print_msg warn "Failed to backup GIMP configuration"
+            rm -rf "$temp_dir"
+            return 1
+        }
+    fi
+
+    mkdir -p "$gimp_config_dir"
+    print_msg info "Applying PhotoGIMP configuration to $gimp_config_dir..."
+    cp -r "$photogimp_config_dir/"* "$gimp_config_dir/" || {
+        print_msg warn "Failed to apply PhotoGIMP configuration"
+        rm -rf "$temp_dir"
+        return 1
+    }
+
+    rm -rf "$temp_dir"
+    print_msg success "PhotoGIMP installed and configured for GIMP 3.0"
+}
+
 check_orphans() {
-    set +e  # Temporarily disable set -e
+    set +e
     print_msg info "Checking for orphaned (unnecessary) packages"
     local orphans
     orphans=$(pacman -Qdtq)
@@ -296,7 +372,7 @@ check_orphans() {
             print_msg info "Skipping removal of orphaned packages"
         fi
     fi
-    set -e  # Re-enable set -e
+    set -e
 }
 
 clean_cache() {
@@ -308,6 +384,33 @@ clean_cache() {
         print_msg success "Package cache cleaned"
     else
         print_msg info "Skipping cache cleaning"
+    fi
+}
+
+update_bootloader() {
+    if [[ "$1" == "linux-zen" ]]; then
+        print_msg info "Updating bootloader for linux-zen"
+        read -p "Update bootloader to include linux-zen? [y/N]: " answer
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+            if [[ "$BOOTLOADER" == "systemd-boot" ]]; then
+                print_msg info "Configuring systemd-boot for linux-zen..."
+                local entry="/boot/loader/entries/arch-zen.conf"
+                sudo bash -c "cat > $entry" << EOF
+title Arch Linux (Zen)
+linux /vmlinuz-linux-zen
+initrd /initramfs-linux-zen.img
+options root=PARTUUID=$(blkid -s PARTUUID -o value /dev/nvme0n1p2) rw
+EOF
+                sudo bootctl install
+                print_msg success "systemd-boot updated. Select 'Arch Linux (Zen)' at boot."
+            elif [[ "$BOOTLOADER" == "grub" ]]; then
+                print_msg info "Configuring GRUB for linux-zen..."
+                sudo grub-mkconfig -o /boot/grub/grub.cfg
+                print_msg success "GRUB updated. Select linux-zen from GRUB menu at boot."
+            fi
+        else
+            print_msg info "Skipping bootloader update. You must manually configure $BOOTLOADER to use linux-zen."
+        fi
     fi
 }
 
@@ -334,7 +437,6 @@ GAMING_PKGS=(
     irqbalance
 )
 AUR_PKGS=(
-    photogimp
     proton-ge-custom
     linux-zen
     dxvk-bin
@@ -353,10 +455,10 @@ fi
 
 show_menu() {
     echo -e "${BLUE}${BOLD}Arch Linux Post-Post Install Menu${RESET}"
-    echo "1. Install all components (gaming, productivity, AUR, optimizations)"
+    echo "1. Install all components (gaming, productivity, PhotoGIMP, AUR, optimizations)"
     echo "2. Install gaming stack (Steam, Vulkan, Wine, etc.)"
     echo "3. Install productivity apps (LibreOffice, digiKam)"
-    echo "4. Install AUR packages (PhotoGIMP, Proton-GE, etc.)"
+    echo "4. Install PhotoGIMP and AUR packages (Proton-GE, linux-zen, etc.)"
     echo "5. Enable system optimizations (ZRAM, gamemoded, linux-zen)"
     echo "6. Check and remove orphaned packages"
     echo "7. Clean package cache"
@@ -401,6 +503,7 @@ main() {
     check_internet
     check_system_status
     check_disk_space
+    check_bootloader
 
     # Keep sudo alive
     sudo -v
@@ -426,8 +529,10 @@ main() {
                 check_package_availability aur "${AUR_PKGS[@]}"
                 install_pacman_pkgs "${PACMAN_PKGS[@]}"
                 install_pacman_pkgs "${GAMING_PKGS[@]}"
+                install_photogimp
                 install_aur_pkgs "${AUR_PKGS[@]}"
                 enable_system_optimizations
+                update_bootloader linux-zen
                 break
                 ;;
             2)
@@ -440,12 +545,15 @@ main() {
                 ;;
             4)
                 check_package_availability aur "${AUR_PKGS[@]}"
+                install_photogimp
                 install_aur_pkgs "${AUR_PKGS[@]}"
+                update_bootloader linux-zen
                 ;;
             5)
                 enable_system_optimizations
                 check_package_availability aur linux-zen
-                install_aur_pkgs linux-zen
+                ZEN_APPROVED=1 install_aur_pkgs linux-zen
+                update_bootloader linux-zen
                 ;;
             6)
                 check_orphans
