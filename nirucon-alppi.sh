@@ -142,11 +142,11 @@ AUR_PKGS=(
 
 main() {
     print_msg info "Starting Arch post-post install script"
-    # Ensure run as root
-    if [[ $EUID -ne 0 ]]; then
-        print_msg error "Please run as root (sudo)"
-    fi
-
+    
+    # Keep sudo alive throughout script execution
+    sudo -v
+    while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+    
     backup_configs
     enable_multilib
     enable_chaotic_aur
