@@ -191,8 +191,14 @@ check_orphans() {
         print_msg warn "Found orphaned packages: $orphans"
         read -p "Remove orphaned packages? [y/N]: " answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            sudo pacman -Rns --noconfirm "$orphans"
-            print_msg success "Orphaned packages removed"
+            # Kontrollera varje paket individuellt för att undvika fel
+            for pkg in $orphans; do
+                if pacman -Q "$pkg" >/dev/null 2>&1; then
+                    sudo pacman -Rns --noconfirm "$pkg" && print_msg success "Removed $pkg"
+                else
+                    print_msg warn "Package $pkg not found, skipping"
+                fi
+            done
         else
             print_msg info "Skipping removal of orphaned packages"
         fi
