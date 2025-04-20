@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# arch_post_post_install.sh - Arch Linux Post-Post Install Script
+# nirucon-alppi.sh - Arch Linux Post-Post Install Script
 # Date: 2025-04-20
 # Author: Original by ChatGPT, enhanced by Grok
 # License: MIT
 # Description:
-#   Enhanced Arch Linux post-post installation script with gaming optimizations.
+#   Fully automated and user-friendly Arch Linux post-post installation script.
 #   Features:
-#     - Interactive menu for selecting components
-#     - Safe modification of pacman.conf with backups
+#     - Interactive menu with clear options
+#     - Safe modification of pacman.conf with backups and rollback
 #     - Robust Chaotic-AUR setup with validation
-#     - Install gaming stack (Steam, Vulkan, Wine, MangoHud, Corectrl, VKBasalt)
-#     - Install LibreOffice Fresh (EN & SV spellcheck)
-#     - Install digiKam and PhotoGIMP (AUR)
-#     - Optional system optimizations (ZRAM, linux-zen)
-#     - Safety checks for sudo, system status, disk space
+#     - Install gaming stack (Steam, Vulkan, Wine, MangoHud, Corectrl, VKBasalt, Lutris)
+#     - Install productivity apps (LibreOffice, digiKam)
+#     - Install AUR packages (PhotoGIMP, Proton-GE, linux-zen, dxvk-bin)
+#     - Optional system optimizations (ZRAM, linux-zen, gamemoded)
+#     - Safety checks for sudo, internet, disk space, system status
+#     - Package availability validation
+#     - Orphaned package cleanup and cache management
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -42,7 +44,6 @@ exec > >(tee -a "${LOGFILE}") 2>&1
 # Handle interrupts (Ctrl+C)
 cleanup() {
     print_msg warn "Script interrupted, cleaning up..."
-    # Remove temporary files if they exist
     [[ -f "/tmp/pacman.conf.tmp" ]] && rm -f /tmp/pacman.conf.tmp
     print_msg info "Exiting safely"
     exit 1
@@ -103,6 +104,16 @@ backup_file() {
     fi
 }
 
+rollback_pacman_conf() {
+    local latest_backup=$(ls -t /etc/pacman.conf.bak.* 2>/dev/null | head -1)
+    if [[ -n "$latest_backup" ]]; then
+        sudo mv "$latest_backup" /etc/pacman.conf
+        print_msg success "Restored pacman.conf from $latest_backup"
+    else
+        print_msg warn "No backup found, cannot restore pacman.conf"
+    fi
+}
+
 backup_configs() {
     print_msg info "Backing up pacman.conf and mirrorlist"
     backup_file /etc/pacman.conf
@@ -115,20 +126,24 @@ enable_multilib() {
         print_msg success "[multilib] already enabled"
     else
         print_msg info "Uncommenting or adding [multilib]"
-        sudo sed -i '/^#\[multilib\]/s/^#//' /etc/pacman.conf
-        sudo sed -i '/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' /etc/pacman.conf
-        if ! grep -q '^\[multilib\]' /etc/pacman.conf; then
-            echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a /etc/pacman.conf
+        local tmp_conf="/tmp/pacman.conf.tmp"
+        cp /etc/pacman.conf "${tmp_conf}"
+        sed -i '/^#\[multilib\]/s/^#//' "${tmp_conf}"
+        sed -i '/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' "${tmp_conf}"
+        if ! grep -q '^\[multilib\]' "${tmp_conf}"; then
+            echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> "${tmp_conf}"
         fi
-        print_msg success "[multilib] enabled"
+        if sudo mv "${tmp_conf}" /etc/pacman.conf; then
+            print_msg success "[multilib] enabled"
+        else
+            print_msg error "Failed to update pacman.conf"
+        fi
     fi
     sudo pacman -Syu --noconfirm
 }
 
 enable_chaotic_aur() {
     print_msg info "Configuring Chaotic-AUR repository"
-
-    # Check if Chaotic-AUR is already configured correctly
     if grep -q '^\[chaotic-aur\]' /etc/pacman.conf && grep -q '^Include = /etc/pacman.d/chaotic-mirrorlist' /etc/pacman.conf; then
         print_msg success "Chaotic-AUR already configured in pacman.conf"
     else
@@ -143,8 +158,6 @@ enable_chaotic_aur() {
         else
             print_msg success "Chaotic-AUR keyring already installed"
         fi
-
-        # Add [chaotic-aur] to pacman.conf safely
         print_msg info "Adding [chaotic-aur] to pacman.conf"
         local tmp_conf="/tmp/pacman.conf.tmp"
         cp /etc/pacman.conf "${tmp_conf}"
@@ -152,6 +165,7 @@ enable_chaotic_aur() {
         if sudo mv "${tmp_conf}" /etc/pacman.conf; then
             print_msg success "Chaotic-AUR added to pacman.conf"
         else
+            rollback_pacman_conf
             print_msg error "Failed to update pacman.conf"
         fi
     fi
@@ -167,21 +181,99 @@ check_yay() {
     print_msg success "yay detected"
 }
 
+check_package_availability() {
+    local pkg_type="$1" pkgs=("${@:2}")
+    print_msg info "Checking availability of $pkg_type packages: ${pkgs[*]}"
+    local failed_pkgs=()
+    for pkg in "${pkgs[@]}"; do
+        if [[ "$pkg_type" == "pacman" ]]; then
+            if ! pacman -Sp "$pkg" >/dev/null 2>&1; then
+                print_msg warn "Package $pkg not found in pacman repositories, checking AUR"
+                if yay -Sp "$pkg" >/dev/null 2>&1; then
+                    AUR_PKGS+=("$pkg")
+                    GAMING_PKGS=("${GAMING_PKGS[@]/$pkg}")
+                    PACMAN_PKGS=("${PACMAN_PKGS[@]/$pkg}")
+                else
+                    failed_pkgs+=("$pkg")
+                fi
+            fi
+        elif [[ "$pkg_type" == "aur" ]]; then
+            if ! yay -Sp "$pkg" >/dev/null 2>&1; then
+                failed_pkgs+=("$pkg")
+            fi
+        fi
+    done
+    if [[ ${#failed_pkgs[@]} -gt 0 ]]; then
+        print_msg warn "Some packages not found: ${failed_pkgs[*]}. They will be skipped."
+    fi
+}
+
+review_aur_pkgbuild() {
+    local pkg="$1"
+    print_msg info "Reviewing PKGBUILD for $pkg"
+    local pkgbuild_file="/tmp/PKGBUILD.$pkg"
+    yay -Gp "$pkg" > "$pkgbuild_file" 2>/dev/null
+    if [[ -s "$pkgbuild_file" ]]; then
+        less "$pkgbuild_file"
+        read -p "Proceed with installation of $pkg? [y/N]: " answer
+        [[ "$answer" =~ ^[Yy]$ ]] || return 1
+    else
+        print_msg warn "Could not retrieve PKGBUILD for $pkg, proceeding without review"
+    fi
+}
+
 install_pacman_pkgs() {
     local pkgs=("${@}")
+    if [[ ${#pkgs[@]} -eq 0 ]]; then
+        print_msg info "No pacman packages to install"
+        return
+    fi
     print_msg info "Installing pacman packages: ${pkgs[*]}"
-    sudo pacman -S --noconfirm --needed "${pkgs[@]}" || print_msg error "Failed to install pacman packages"
-    print_msg success "Pacman packages installed"
+    local failed_pkgs=()
+    for pkg in "${pkgs[@]}"; do
+        if ! sudo pacman -S --noconfirm --needed "$pkg" 2>/dev/null; then
+            print_msg warn "Failed to install $pkg, it may not exist in pacman repositories"
+            failed_pkgs+=("$pkg")
+        fi
+    done
+    if [[ ${#failed_pkgs[@]} -eq 0 ]]; then
+        print_msg success "Pacman packages installed"
+    else
+        print_msg warn "Some packages failed to install: ${failed_pkgs[*]}"
+        echo "Failed pacman packages: ${failed_pkgs[*]}" >> "${LOGFILE}.failed"
+    fi
 }
 
 install_aur_pkgs() {
     local pkgs=("${@}")
+    if [[ ${#pkgs[@]} -eq 0 ]]; then
+        print_msg info "No AUR packages to install"
+        return
+    fi
     print_msg info "Installing AUR packages: ${pkgs[*]}"
-    yay -S --noconfirm --needed "${pkgs[@]}" || print_msg error "Failed to install AUR packages"
-    print_msg success "AUR packages installed"
+    local filtered_pkgs=()
+    for pkg in "${pkgs[@]}"; do
+        if [[ "$pkg" == "linux-zen" ]]; then
+            read -p "Install linux-zen kernel (optimized for performance)? [y/N]: " answer
+            if [[ "$answer" =~ ^[Yy]$ ]]; then
+                review_aur_pkgbuild "$pkg" && filtered_pkgs+=("$pkg")
+            else
+                print_msg info "Skipping linux-zen installation"
+            fi
+        else
+            review_aur_pkgbuild "$pkg" && filtered_pkgs+=("$pkg")
+        fi
+    done
+    if [[ ${#filtered_pkgs[@]} -gt 0 ]]; then
+        yay -S --noconfirm --needed "${filtered_pkgs[@]}" || print_msg warn "Some AUR packages failed to install"
+        print_msg success "AUR packages installed"
+    else
+        print_msg info "No AUR packages selected for installation"
+    fi
 }
 
 check_orphans() {
+    set +e  # Temporarily disable set -e
     print_msg info "Checking for orphaned (unnecessary) packages"
     local orphans
     orphans=$(pacman -Qdtq)
@@ -191,10 +283,11 @@ check_orphans() {
         print_msg warn "Found orphaned packages: $orphans"
         read -p "Remove orphaned packages? [y/N]: " answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
-            # Kontrollera varje paket individuellt för att undvika fel
             for pkg in $orphans; do
                 if pacman -Q "$pkg" >/dev/null 2>&1; then
                     sudo pacman -Rns --noconfirm "$pkg" && print_msg success "Removed $pkg"
+                elif yay -Q "$pkg" >/dev/null 2>&1; then
+                    yay -Rns --noconfirm "$pkg" && print_msg success "Removed AUR package $pkg"
                 else
                     print_msg warn "Package $pkg not found, skipping"
                 fi
@@ -202,6 +295,19 @@ check_orphans() {
         else
             print_msg info "Skipping removal of orphaned packages"
         fi
+    fi
+    set -e  # Re-enable set -e
+}
+
+clean_cache() {
+    print_msg info "Checking package cache"
+    read -p "Clean pacman and yay cache? [y/N]: " answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        sudo pacman -Sc --noconfirm
+        yay -Sc --noconfirm
+        print_msg success "Package cache cleaned"
+    else
+        print_msg info "Skipping cache cleaning"
     fi
 }
 
@@ -221,11 +327,18 @@ GAMING_PKGS=(
     mangohud
     corectrl
     vkbasalt
-    dxvk-bin
     vkd3d
     lutris
     pipewire
     pipewire-pulse
+    irqbalance
+)
+AUR_PKGS=(
+    photogimp
+    proton-ge-custom
+    linux-zen
+    dxvk-bin
+    goverlay
 )
 if lspci | grep -i nvidia &>/dev/null; then
     GAMING_PKGS+=(nvidia nvidia-utils lib32-nvidia-utils)
@@ -237,26 +350,23 @@ else
     print_msg warn "GPU not detected; installing generic mesa"
     GAMING_PKGS+=(mesa)
 fi
-AUR_PKGS=(
-    photogimp
-    proton-ge-custom
-    linux-zen
-)
 
 show_menu() {
     echo -e "${BLUE}${BOLD}Arch Linux Post-Post Install Menu${RESET}"
-    echo "1. Install all components"
-    echo "2. Install gaming stack"
+    echo "1. Install all components (gaming, productivity, AUR, optimizations)"
+    echo "2. Install gaming stack (Steam, Vulkan, Wine, etc.)"
     echo "3. Install productivity apps (LibreOffice, digiKam)"
-    echo "4. Install AUR packages (PhotoGIMP, Proton-GE)"
-    echo "5. Enable system optimizations (ZRAM, linux-zen)"
-    echo "6. Exit"
-    read -p "Select an option [1-6]: " choice
+    echo "4. Install AUR packages (PhotoGIMP, Proton-GE, etc.)"
+    echo "5. Enable system optimizations (ZRAM, gamemoded, linux-zen)"
+    echo "6. Check and remove orphaned packages"
+    echo "7. Clean package cache"
+    echo "8. Exit"
+    read -p "Select an option [1-8]: " choice
 }
 
 enable_system_optimizations() {
     print_msg info "Enabling system optimizations"
-    read -p "Enable gamemoded service? [y/N]: " answer
+    read -p "Enable gamemoded service for gaming performance? [y/N]: " answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         sudo systemctl enable --now gamemoded
         print_msg success "gamemoded enabled"
@@ -272,6 +382,14 @@ enable_system_optimizations() {
         print_msg success "ZRAM enabled"
     else
         print_msg info "Skipping ZRAM setup"
+    fi
+
+    read -p "Enable irqbalance for network performance? [y/N]: " answer
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        sudo systemctl enable --now irqbalance
+        print_msg success "irqbalance enabled"
+    else
+        print_msg info "Skipping irqbalance activation"
     fi
 }
 
@@ -303,6 +421,9 @@ main() {
         show_menu
         case $choice in
             1)
+                check_package_availability pacman "${PACMAN_PKGS[@]}"
+                check_package_availability pacman "${GAMING_PKGS[@]}"
+                check_package_availability aur "${AUR_PKGS[@]}"
                 install_pacman_pkgs "${PACMAN_PKGS[@]}"
                 install_pacman_pkgs "${GAMING_PKGS[@]}"
                 install_aur_pkgs "${AUR_PKGS[@]}"
@@ -310,19 +431,29 @@ main() {
                 break
                 ;;
             2)
+                check_package_availability pacman "${GAMING_PKGS[@]}"
                 install_pacman_pkgs "${GAMING_PKGS[@]}"
                 ;;
             3)
+                check_package_availability pacman "${PACMAN_PKGS[@]}"
                 install_pacman_pkgs "${PACMAN_PKGS[@]}"
                 ;;
             4)
+                check_package_availability aur "${AUR_PKGS[@]}"
                 install_aur_pkgs "${AUR_PKGS[@]}"
                 ;;
             5)
                 enable_system_optimizations
+                check_package_availability aur linux-zen
                 install_aur_pkgs linux-zen
                 ;;
             6)
+                check_orphans
+                ;;
+            7)
+                clean_cache
+                ;;
+            8)
                 print_msg success "Exiting script"
                 exit 0
                 ;;
@@ -334,6 +465,9 @@ main() {
 
     print_msg success "All selected components installed"
     echo -e "\n${GREEN}${BOLD}Done!${RESET} Review log at $LOGFILE"
+    if [[ -f "${LOGFILE}.failed" ]]; then
+        echo -e "${YELLOW}${BOLD}Note:${RESET} Some packages failed to install. Check ${LOGFILE}.failed for details."
+    fi
 }
 
 main
