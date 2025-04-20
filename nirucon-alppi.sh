@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Nirucon-ALPPI: Arch Linux Post-Post Install Script
-# Version: 2025-04-19
+# Version: 2025-04-20
 # Author: Nicklas Rudolfsson
 # GitHub: https://github.com/nirucon/nirucon-alppi
 # Email: n@rudolfsson.net
@@ -66,7 +66,7 @@ display_welcome() {
     echo -e "${BLUE}${BOLD} Nirucon-ALPPI: Arch Linux Post-Post Install Script ${RESET}"
     echo -e "${BLUE}${BOLD}============================================================${RESET}"
     echo -e "${RED}${BOLD}Disclaimer:${RESET} Use at your own risk. No responsibility for system issues."
-    echo -e "${YELLOW}Version:${RESET} 2025-04-19 | ${YELLOW}Author:${RESET} Nicklas Rudolfsson | ${YELLOW}GitHub:${RESET} https://github.com/nirucon/nirucon-alppi"
+    echo -e "${YELLOW}Version:${RESET} 2025-04-20 | ${YELLOW}Author:${RESET} Nicklas Rudolfsson | ${YELLOW}GitHub:${RESET} https://github.com/nirucon/nirucon-alppi"
     echo -e "${BLUE}${BOLD}------------------------------------------------------------${RESET}"
 }
 
@@ -352,6 +352,15 @@ main() {
     sudo -v || { print_message error "Sudo authentication failed"; exit 1; }
     display_welcome
     check_internet
+
+    # Check if system is up to date
+    print_message info "Checking if system is up to date..."
+    if ! sudo pacman -Syu --noconfirm; then
+        print_message error "Failed to update system. Please run 'pacman -Syu' manually and try again."
+        exit 1
+    fi
+    print_message success "System is up to date"
+
     install_components
     display_summary
     print_message info "=== Installation Complete ==="
