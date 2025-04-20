@@ -150,6 +150,54 @@ install_photogimp() {
     print_message success "PhotoGIMP installed and configured for GIMP 3.0"
 }
 
+# Function: Install Steam and gaming-related components
+install_gaming() {
+    print_message info "Installing Steam and gaming components..."
+
+    # Define gaming-related packages
+    local gaming_packages=(
+        "steam"                     # Steam client
+        "lib32-pipewire"            # 32-bit PipeWire for audio compatibility
+        "lib32-libpulse"            # 32-bit PulseAudio for audio compatibility
+        "lib32-alsa-lib"            # 32-bit ALSA for audio
+        "lib32-nvidia-utils"        # 32-bit NVIDIA drivers (if applicable)
+        "lib32-mesa"                # 32-bit Mesa for OpenGL/Vulkan
+        "vulkan-icd-loader"         # Vulkan loader
+        "lib32-vulkan-icd-loader"   # 32-bit Vulkan loader
+        "gamemode"                  # Optimizes system for gaming
+        "wine"                      # For running Windows games
+        "protontricks"              # For managing Proton prefixes
+        "mangohud"                  # Performance overlay for games
+    )
+
+    # Check for NVIDIA GPU and add NVIDIA-specific packages if detected
+    if lspci | grep -i nvidia >/dev/null; then
+        print_message info "NVIDIA GPU detected. Including NVIDIA-specific packages."
+        gaming_packages+=("nvidia" "nvidia-utils")
+    fi
+
+    # Install gaming packages
+    sudo pacman -S --noconfirm "${gaming_packages[@]}" || {
+        print_message error "Failed to install gaming components"
+        installed_components["gaming"]="Failed"
+        return
+    }
+
+    # Enable Steam udev rules (for controller support)
+    if [ -f /usr/lib/udev/rules.d/70-steam-input.rules ]; then
+        print_message info "Enabling Steam udev rules for controller support..."
+        sudo udevadm control --reload-rules && sudo udevadm trigger || {
+            print_message warning "Failed to reload udev rules for Steam"
+        }
+    fi
+
+    # Enable gamemode service (optional, for user to decide)
+    print_message info "Gamemode is installed. Enable it manually with 'systemctl --user enable gamemoded' if desired."
+
+    installed_components["gaming"]="Installed"
+    print_message success "Steam and gaming components installed"
+}
+
 # Function: Install components
 install_components() {
     print_message info "=== Additional Components ==="
@@ -161,6 +209,7 @@ install_components() {
         "digikam:Professional photo management and editing software:pacman:digikam"
         "gimp:GIMP image editor with PhotoGIMP customization:pacman:gimp"
         "photogimp:Customizes GIMP to resemble Photoshop (requires GIMP):custom:install_photogimp"
+        "gaming:Steam client and gaming optimizations (Vulkan, Gamemode, etc.):custom:install_gaming"
     )
     local selected_pacman=() selected_custom=()
 
