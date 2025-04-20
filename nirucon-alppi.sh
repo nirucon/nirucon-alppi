@@ -67,10 +67,10 @@ check_internet() {
 validate_pacman_conf() {
     local conf_file="$1"
     print_message info "Validating $conf_file..."
-    sudo pacman -Syy --debug 2>&1 | grep -q "error: config file $conf_file" && {
+    if sudo pacman -Syy --debug 2>&1 | grep -q "error: config file $conf_file"; then
         print_message error "$conf_file contains syntax errors"
         return 1
-    }
+    fi
     print_message success "$conf_file is syntactically correct"
     return 0
 }
@@ -248,7 +248,7 @@ check_mirrorlist() {
     pacman_conf_files=$(sudo pacman -Syy --debug 2>&1 | grep "loading.*conf" | awk '{print $NF}' | sort -u)
     if [ -n "$pacman_conf_files" ]; then
         print_message info "Pacman is loading the following configuration files:"
-        echo "$pacman_conf_files" | while read -r file; do
+        while read -r file; do
             print_message info "  - $file"
             if [ -f "$file" ]; then
                 print_message info "Content of $file:"
@@ -258,7 +258,7 @@ check_mirrorlist() {
             else
                 print_message warning "File $file does not exist"
             fi
-        done
+        done <<< "$pacman_conf_files"
     else
         print_message warning "No configuration files detected by pacman --debug"
     fi
@@ -311,7 +311,7 @@ check_mirrorlist() {
     invalid_files=$(find /etc/pacman.d/ -type f -exec grep -l -E "^\[options\]|^Server" {} \;)
     if [ -n "$invalid_files" ]; then
         print_message warning "Found [options] or Server directives in the following files: $invalid_files"
-        echo "$invalid_files" | while read -r file; do
+        while read -r file; do
             print_message warning "Content of $file:"
             cat "$file" | while read -r line; do
                 print_message warning "  $line"
@@ -325,7 +325,7 @@ check_mirrorlist() {
                     print_message error "Failed to comment out Server directives in $file"
                 }
             fi
-        done
+        done <<< "$invalid_files"
     fi
 
     # Clear pacman and yay cache
@@ -351,7 +351,7 @@ check_yay() {
     if ! command -v yay >/dev/null 2>&1; then
         print_message error "yay is not installed. Please install yay (e.g., via nirucon-alpi.sh) and try again."
         exit 1
-    }
+    fi
     print_message success "yay is installed"
 }
 
