@@ -154,6 +154,20 @@ install_photogimp() {
 install_gaming() {
     print_message info "Installing Steam and gaming components..."
 
+    # Check if multilib is enabled
+    if ! grep -q '^\[multilib\]' /etc/pacman.conf || ! grep -q '^Include = /etc/pacman.d/mirrorlist' /etc/pacman.conf -A 1; then
+        print_message warning "Multilib repository is not enabled. Enabling it now..."
+        sudo sed -i '/#\[multilib\]/s/^#//; /#Include = \/etc\/pacman.d\/mirrorlist/s/^#//' /etc/pacman.conf || {
+            print_message error "Failed to enable multilib repository"
+            exit 1
+        }
+        sudo pacman -Sy || {
+            print_message error "Failed to sync repositories after enabling multilib"
+            exit 1
+        }
+        print_message success "Multilib repository enabled"
+    fi
+
     # Define gaming-related packages
     local gaming_packages=(
         "steam"                     # Steam client
@@ -170,13 +184,13 @@ install_gaming() {
     )
 
     # Detect GPU and add appropriate driver packages
-    if lspci | grep -i nvidia >/dev/null; then
+    if lspci -k | grep -iE 'vga.*nvidia' >/dev/null; then
         print_message info "NVIDIA GPU detected. Including NVIDIA-specific packages."
         gaming_packages+=("nvidia" "nvidia-utils" "lib32-nvidia-utils")
-    elif lspci | grep -Ei 'amd|radeon' >/dev/null; then
+    elif lspci -k | grep -iE 'vga.*(amd|radeon)' >/dev/null; then
         print_message info "AMD GPU detected. Including AMD-specific packages."
         gaming_packages+=("mesa" "vulkan-radeon" "lib32-vulkan-radeon")
-    elif lspci | grep -i intel >/dev/null; then
+    elif lspci -k | grep -iE 'vga.*intel' >/dev/null; then
         print_message info "Intel GPU detected. Including Intel-specific packages."
         gaming_packages+=("mesa" "vulkan-intel" "lib32-vulkan-intel")
     else
@@ -184,12 +198,46 @@ install_gaming() {
         gaming_packages+=("mesa")
     fi
 
-    # Install gaming packages
-    sudo pacman -S --noconfirm "${gaming_packages[@]}" || {
-        print_message error "Failed to install gaming components"
-        installed_components["gaming"]="Failed"
-        return
-    }
+    # Install gaming packages with fallback to yay
+    for pkg in "${gaming_packages[@]}"; do
+        if ! pacman -Si "$pkg" >/dev/null 2>&1; then
+            print_message info "Package $pkg not found in pacman repos. Trying yay..."
+            yay -S --noconfirm "$pkg" || {
+                print_message warning "Failed to install $pkg with yay"
+            }
+        else
+            sudo pacman -S --noconfirm "$pkg" || {
+                print_message warning "Failed to install $pkg with pacman"
+            }
+        fi
+    done
+
+    # Install optional Chaotic-AUR gaming packages
+    if [[ "${installed_components['chaotic-aur']}" == "Installed" ]]; then
+        read -p "${BLUE}${BOLD}[?]${RESET} Install Proton-GE-Custom from Chaotic-AUR for enhanced Steam Play? [Y/n]: " proton_choice
+        proton_choice="${proton_choice,,}"
+        if [[ "$proton_choice" =~ ^(yes|y| ) ]] || [[ -z "$proton_choice" ]]; then
+            sudo pacman -S --noconfirm proton-ge-custom || {
+                print_message warning "Failed to install proton-ge-custom"
+            }
+        fi
+
+        read -p "${BLUE}${BOLD}[?]${RESET} Install Lutris for additional gaming platform? [Y/n]: " lutris_choice
+        lutris_choice="${lutris_choice,,}"
+        if [[ "$lutris_choice" =~ ^(yes|y| ) ]] || [[ -z "$lutris_choice" ]]; then
+            sudo pacman -S --noconfirm lutris || {
+                print_message warning "Failed to install Lutris"
+            }
+        fi
+
+        read -p "${BLUE}${BOLD}[?]${RESET} Install linux-zen kernel for optimized gaming performance? [Y/n]: " kernel_choice
+        kernel_choice="${kernel_choice,,}"
+        if [[ "$kernel_choice" =~ ^(yes|y| ) ]] || [[ -z "$kernel_choice" ]]; then
+            sudo pacman -S --noconfirm linux-zen linux-zen-headers || {
+                print_message warning "Failed to install linux-zen"
+            }
+        fi
+    fi
 
     # Enable Steam udev rules (for controller support)
     if [ -f /usr/lib/udev/rules.d/70-steam-input.rules ]; then
@@ -201,6 +249,16 @@ install_gaming() {
 
     # Enable gamemode service (optional, for user to decide)
     print_message info "Gamemode is installed. Enable it manually with 'systemctl --user enable gamemoded' if desired."
+
+    # Inform about Steam Play
+    print_message info "To enable Windows games on Steam, go to Steam Settings > Steam Play and enable 'Enable Steam Play for all titles'."
+
+    # Verify Vulkan installation
+    if command -v vulkaninfo >/dev/null 2>&1; then
+        vulkaninfo --summary >/dev/null 2>&1 && print_message success "Vulkan is correctly installed"
+    else
+        print_message warning "Vulkan is not properly installed. Some games may not work."
+    fi
 
     installed_components["gaming"]="Installed"
     print_message success "Steam and gaming components installed"
