@@ -71,6 +71,16 @@ check_mirrorlist() {
     print_message info "Pacman version: $(pacman --version | head -n 1)"
     print_message info "Yay version: $(yay --version | head -n 1)"
 
+    # Log shell aliases and environment variables
+    print_message info "Checking shell aliases for pacman or yay..."
+    local aliases
+    aliases=$(alias | grep -E "pacman|yay" || echo "None")
+    print_message info "Aliases:\n$aliases"
+    print_message info "Checking environment variables for PACMAN or ALPM..."
+    local env_vars
+    env_vars=$(env | grep -E "PACMAN|ALPM" || echo "None")
+    print_message info "Environment variables:\n$env_vars"
+
     # Log all configuration files loaded by pacman
     print_message info "Checking configuration files loaded by pacman..."
     local pacman_conf_files
@@ -79,6 +89,14 @@ check_mirrorlist() {
         print_message info "Pacman is loading the following configuration files:"
         echo "$pacman_conf_files" | while read -r file; do
             print_message info "  - $file"
+            if [ -f "$file" ]; then
+                print_message info "Content of $file:"
+                cat "$file" | while read -r line; do
+                    print_message info "    $line"
+                done
+            else
+                print_message warning "File $file does not exist"
+            fi
         done
     else
         print_message warning "No configuration files detected by pacman --debug"
@@ -143,6 +161,22 @@ check_mirrorlist() {
         fi
     fi
 
+    # Check /etc/pacman.d/gnupg/ for unexpected configuration files
+    print_message info "Checking /etc/pacman.d/gnupg/ for unexpected configuration files..."
+    local gnupg_files
+    gnupg_files=$(find /etc/pacman.d/gnupg/ -type f -name "*.conf")
+    if [ -n "$gnupg_files" ]; then
+        print_message warning "Found unexpected configuration files in /etc/pacman.d/gnupg/: $gnupg_files"
+        echo "$gnupg_files" | while read -r file; do
+            print_message warning "Content of $file:"
+            cat "$file" | while read -r line; do
+                print_message warning "  $line"
+            done
+        done
+    else
+        print_message success "No unexpected configuration files in /etc/pacman.d/gnupg/"
+    fi
+
     # Check for [options] or Server in other pacman.d files
     local invalid_files
     invalid_files=$(find /etc/pacman.d/ -type f -exec grep -l -E "^\[options\]|^Server" {} \;)
@@ -156,6 +190,12 @@ check_mirrorlist() {
         done
         print_message warning "Please inspect and correct these files manually, or back them up and remove them."
     fi
+
+    # Clear yay cache
+    print_message info "Clearing yay cache to avoid cached configuration issues..."
+    yay -Sc --noconfirm || {
+        print_message warning "Failed to clear yay cache"
+    }
 
     # Sync repositories
     sudo pacman -Sy || {
