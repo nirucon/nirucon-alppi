@@ -160,7 +160,6 @@ install_gaming() {
         "lib32-pipewire"            # 32-bit PipeWire for audio compatibility
         "lib32-libpulse"            # 32-bit PulseAudio for audio compatibility
         "lib32-alsa-lib"            # 32-bit ALSA for audio
-        "lib32-nvidia-utils"        # 32-bit NVIDIA drivers (if applicable)
         "lib32-mesa"                # 32-bit Mesa for OpenGL/Vulkan
         "vulkan-icd-loader"         # Vulkan loader
         "lib32-vulkan-icd-loader"   # 32-bit Vulkan loader
@@ -170,10 +169,19 @@ install_gaming() {
         "mangohud"                  # Performance overlay for games
     )
 
-    # Check for NVIDIA GPU and add NVIDIA-specific packages if detected
+    # Detect GPU and add appropriate driver packages
     if lspci | grep -i nvidia >/dev/null; then
         print_message info "NVIDIA GPU detected. Including NVIDIA-specific packages."
-        gaming_packages+=("nvidia" "nvidia-utils")
+        gaming_packages+=("nvidia" "nvidia-utils" "lib32-nvidia-utils")
+    elif lspci | grep -Ei 'amd|radeon' >/dev/null; then
+        print_message info "AMD GPU detected. Including AMD-specific packages."
+        gaming_packages+=("mesa" "vulkan-radeon" "lib32-vulkan-radeon")
+    elif lspci | grep -i intel >/dev/null; then
+        print_message info "Intel GPU detected. Including Intel-specific packages."
+        gaming_packages+=("mesa" "vulkan-intel" "lib32-vulkan-intel")
+    else
+        print_message warning "No supported GPU detected. Installing generic Mesa drivers."
+        gaming_packages+=("mesa")
     fi
 
     # Install gaming packages
