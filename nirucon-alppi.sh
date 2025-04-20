@@ -153,7 +153,7 @@ main() {
     check_yay
 
     print_msg info "Updating system packages"
-    pacman -Syu --noconfirm
+    sudo pacman -Syu --noconfirm
     print_msg success "System up to date"
 
     install_pacman_pkgs "${PACMAN_PKGS[@]}"
