@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Nirucon-ALPPI: Arch Linux Post-Post Install Script
-# Version: 2025-04-20
+# Version: 2025-04-19
 # Author: Nicklas Rudolfsson
 # GitHub: https://github.com/nirucon/nirucon-alppi
 # Email: n@rudolfsson.net
@@ -34,6 +34,10 @@ export TERM=xterm-256color
 # Track installed components
 declare -A installed_components
 
+# Enable logging
+exec 1> >(tee -a "/tmp/nirucon-alppi.log")
+exec 2>&1
+
 # Function: Print formatted messages
 print_message() {
     local type="$1" msg="$2"
@@ -59,6 +63,118 @@ check_internet() {
     print_message success "Internet connection: OK"
 }
 
+# Function: Check and fix mirrorlist
+check_mirrorlist() {
+    print_message info "Checking pacman configuration and mirrorlists..."
+
+    # Log pacman and yay versions
+    print_message info "Pacman version: $(pacman --version | head -n 1)"
+    print_message info "Yay version: $(yay --version | head -n 1)"
+
+    # Log all configuration files loaded by pacman
+    print_message info "Checking configuration files loaded by pacman..."
+    local pacman_conf_files
+    pacman_conf_files=$(sudo pacman -Syu --debug 2>&1 | grep "loading.*conf" | awk '{print $NF}' | sort -u)
+    if [ -n "$pacman_conf_files" ]; then
+        print_message info "Pacman is loading the following configuration files:"
+        echo "$pacman_conf_files" | while read -r file; do
+            print_message info "  - $file"
+        done
+    else
+        print_message warning "No configuration files detected by pacman --debug"
+    fi
+
+    # Check /etc/pacman.conf for invalid Server directives in [options]
+    if grep -q '^\[options\]' /etc/pacman.conf && grep -A 10 '^\[options\]' /etc/pacman.conf | grep -q '^Server'; then
+        print_message warning "Found invalid 'Server' directive in [options] section of /etc/pacman.conf. Backing up and fixing..."
+        sudo cp /etc/pacman.conf /etc/pacman.conf.bak || {
+            print_message error "Failed to backup /etc/pacman.conf"
+            exit 1
+        }
+        sudo sed -i '/^\[options\]/,/^$/s/^Server/#Server/' /etc/pacman.conf || {
+            print_message error "Failed to comment out Server directives in /etc/pacman.conf"
+            exit 1
+        }
+    fi
+
+    # Check /etc/pacman.d/mirrorlist
+    if [ ! -s /etc/pacman.d/mirrorlist ] || grep -q '^\[.*\]' /etc/pacman.d/mirrorlist; then
+        print_message warning "Invalid or empty /etc/pacman.d/mirrorlist detected. Attempting to fix..."
+        sudo mv /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak 2>/dev/null || {
+            print_message warning "No existing mirrorlist to backup"
+        }
+        if ! command -v reflector >/dev/null 2>&1; then
+            print_message info "Installing reflector for optimized mirrorlist..."
+            sudo pacman -S --noconfirm reflector || {
+                print_message warning "Failed to install reflector. Using fallback mirrorlist..."
+                echo -e "# Arch Linux mirrorlist\nServer = https://mirror.archlinux.se/\$repo/os/\$arch\nServer = https://mirrors.kernel.org/archlinux/\$repo/os/\$arch" | sudo tee /etc/pacman.d/mirrorlist >/dev/null || {
+                    print_message error "Failed to create fallback mirrorlist"
+                    exit 1
+                }
+            }
+        fi
+        if command -v reflector >/dev/null 2>&1; then
+            print_message info "Generating new mirrorlist with reflector..."
+            sudo reflector --country Sweden --latest 10 --sort rate --save /etc/pacman.d/mirrorlist || {
+                print_message warning "Failed to generate new mirrorlist with reflector. Using fallback..."
+                echo -e "# Arch Linux mirrorlist\nServer = https://mirror.archlinux.se/\$repo/os/\$arch\nServer = https://mirrors.kernel.org/archlinux/\$repo/os/\$arch" | sudo tee /etc/pacman.d/mirrorlist >/dev/null || {
+                    print_message error "Failed to create fallback mirrorlist"
+                    exit 1
+                }
+            }
+        fi
+    else
+        print_message success "/etc/pacman.d/mirrorlist is valid"
+    fi
+
+    # Check /etc/pacman.d/chaotic-mirrorlist if it exists
+    if [ -f /etc/pacman.d/chaotic-mirrorlist ]; then
+        if [ ! -s /etc/pacman.d/chaotic-mirrorlist ] || grep -q '^\[.*\]' /etc/pacman.d/chaotic-mirrorlist; then
+            print_message warning "Invalid or empty /etc/pacman.d/chaotic-mirrorlist detected. Attempting to fix..."
+            sudo mv /etc/pacman.d/chaotic-mirrorlist /etc/pacman.d/chaotic-mirrorlist.bak 2>/dev/null || {
+                print_message warning "No existing chaotic-mirrorlist to backup"
+            }
+            echo -e "Server = https://cdn-mirror.chaotic.cx/chaotic-aur/\$arch\nServer = https://geo-mirror.chaotic.cx/chaotic-aur/\$arch" | sudo tee /etc/pacman.d/chaotic-mirrorlist >/dev/null || {
+                print_message error "Failed to create chaotic-mirrorlist"
+                exit 1
+            }
+        else
+            print_message success "/etc/pacman.d/chaotic-mirrorlist is valid"
+        fi
+    fi
+
+    # Check for [options] or Server in other pacman.d files
+    local invalid_files
+    invalid_files=$(find /etc/pacman.d/ -type f -exec grep -l -E "^\[options\]|^Server" {} \;)
+    if [ -n "$invalid_files" ]; then
+        print_message warning "Found [options] or Server directives in the following files: $invalid_files"
+        echo "$invalid_files" | while read -r file; do
+            print_message warning "Content of $file:"
+            cat "$file" | while read -r line; do
+                print_message warning "  $line"
+            done
+        done
+        print_message warning "Please inspect and correct these files manually, or back them up and remove them."
+    fi
+
+    # Sync repositories
+    sudo pacman -Sy || {
+        print_message error "Failed to sync repositories after checking mirrorlists"
+        exit 1
+    }
+    print_message success "Mirrorlist configurations checked and repositories synced"
+}
+
+# Function: Check if yay is installed
+check_yay() {
+    print_message info "Checking if yay is installed..."
+    if ! command -v yay >/dev/null 2>&1; then
+        print_message error "yay is not installed. Please install yay (e.g., via nirucon-alpi.sh) and try again."
+        exit 1
+    fi
+    print_message success "yay is installed"
+}
+
 # Function: Display welcome message
 display_welcome() {
     clear
@@ -66,7 +182,7 @@ display_welcome() {
     echo -e "${BLUE}${BOLD} Nirucon-ALPPI: Arch Linux Post-Post Install Script ${RESET}"
     echo -e "${BLUE}${BOLD}============================================================${RESET}"
     echo -e "${RED}${BOLD}Disclaimer:${RESET} Use at your own risk. No responsibility for system issues."
-    echo -e "${YELLOW}Version:${RESET} 2025-04-20 | ${YELLOW}Author:${RESET} Nicklas Rudolfsson | ${YELLOW}GitHub:${RESET} https://github.com/nirucon/nirucon-alppi"
+    echo -e "${YELLOW}Version:${RESET} 2025-04-19 | ${YELLOW}Author:${RESET} Nicklas Rudolfsson | ${YELLOW}GitHub:${RESET} https://github.com/nirucon/nirucon-alppi"
     echo -e "${BLUE}${BOLD}------------------------------------------------------------${RESET}"
 }
 
@@ -236,6 +352,7 @@ install_gaming() {
             sudo pacman -S --noconfirm linux-zen linux-zen-headers || {
                 print_message warning "Failed to install linux-zen"
             }
+            print_message info "If linux-zen was installed, update GRUB with 'sudo grub-mkconfig -o /boot/grub/grub.cfg' to use the new kernel."
         fi
     fi
 
@@ -271,7 +388,7 @@ install_components() {
     local components=(
         "chaotic-aur:Additional AUR repository with precompiled packages:custom:install_chaotic_aur"
         "libreoffice-fresh:Full-featured office suite (Writer, Calc, Impress, etc.):pacman:libreoffice-fresh"
-        "libreoffice-fresh-sv:Swedish language support and spellcheck for LibreOffice:pacman:libreoffice-fresh-sv hunspell-sv"
+        "libreoffice-sv:Swedish language support and spellcheck for LibreOffice:pacman:hunspell-sv"
         "digikam:Professional photo management and editing software:pacman:digikam"
         "gimp:GIMP image editor with PhotoGIMP customization:pacman:gimp"
         "photogimp:Customizes GIMP to resemble Photoshop (requires GIMP):custom:install_photogimp"
@@ -318,9 +435,18 @@ install_components() {
 
     # Install pacman packages
     if [[ ${#selected_pacman[@]} -gt 0 ]]; then
-        sudo pacman -S --noconfirm "${selected_pacman[@]}" || { print_message error "Failed to install pacman components"; exit 1; }
-        for pkg in "${selected_pacman[@]}"; do
-            local pkg_name="${pkg%% *}"
+        # Split package strings into individual packages
+        local all_packages=()
+        for pkg_string in "${selected_pacman[@]}"; do
+            read -ra pkgs <<< "$pkg_string"
+            all_packages+=("${pkgs[@]}")
+        done
+        if ! sudo pacman -S --noconfirm "${all_packages[@]}"; then
+            print_message error "Failed to install pacman components: ${all_packages[*]}"
+            exit 1
+        fi
+        for pkg_string in "${selected_pacman[@]}"; do
+            local pkg_name="${pkg_string%% *}"
             installed_components["$pkg_name"]="Installed"
         done
     fi
@@ -352,6 +478,8 @@ main() {
     sudo -v || { print_message error "Sudo authentication failed"; exit 1; }
     display_welcome
     check_internet
+    check_mirrorlist
+    check_yay
 
     # Check if system is up to date
     print_message info "Checking if system is up to date..."
