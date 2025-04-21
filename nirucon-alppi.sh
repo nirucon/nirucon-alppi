@@ -332,7 +332,8 @@ install_photogimp() {
     fi
 
     mkdir -p "$target_dir"
-    cp -rf "$source_dir/"* "$target_dir/" || print_msg error "Failed to copy PhotoGIMP config"
+    # 🔥 Viktigt! Kopiera ALLT, inklusive dolda filer
+    cp -rf "$source_dir"/. "$target_dir"/ || print_msg error "Failed to copy PhotoGIMP config"
 
     rm -rf "$temp_dir"
     print_msg success "PhotoGIMP configuration copied into ~/.config/GIMP/3.0"
