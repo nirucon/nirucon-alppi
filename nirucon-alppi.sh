@@ -296,12 +296,14 @@ install_photogimp() {
 
     # Determine the actual user's home directory, even if run with sudo
     if [ "$SUDO_USER" ]; then
+        USER_NAME="$SUDO_USER"
         USER_HOME=$(eval echo "~$SUDO_USER")
     else
+        USER_NAME="$USER"
         USER_HOME="$HOME"
     fi
 
-    # Ensure dependencies are present
+    # Step 1: Check and install dependencies
     for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
             echo "❗ $dep is missing. Installing..."
@@ -309,7 +311,7 @@ install_photogimp() {
         fi
     done
 
-    # Create temporary directory
+    # Step 2: Download and extract PhotoGIMP
     temp_dir="/tmp/photogimp_temp_$$"
     mkdir -p "$temp_dir"
     echo "⬇️ Downloading PhotoGIMP..."
@@ -327,15 +329,22 @@ install_photogimp() {
         return 1
     fi
 
-    echo "🧹 Removing old GIMP config (if any)..."
+    # Step 3: Remove old GIMP config and apply PhotoGIMP
+    echo "🧹 Removing old GIMP configuration..."
     rm -rf "$target_config/GIMP"
 
-    echo "📁 Copying PhotoGIMP configuration to $target_config ..."
+    echo "💾 Copying PhotoGIMP configuration to $target_config ..."
     cp -av "$source_config"/. "$target_config"/
 
-    echo "✅ PhotoGIMP has been applied!"
+    # Step 4: Fix ownership and permissions
+    echo "🔐 Fixing file ownership and permissions..."
+    sudo chown -R "$USER_NAME":"$USER_NAME" "$target_config/GIMP"
+    chmod -R u+rw "$target_config/GIMP"
+
+    # Step 5: Done
+    echo "✅ PhotoGIMP has been successfully installed!"
     echo "🚀 Launch GIMP to see the new layout."
-    echo "🧪 Temporary folder with source files: $temp_dir"
+    echo "🧪 Temporary folder with extracted files: $temp_dir (not removed in case you want to inspect)"
 }
 
 check_orphans() {
