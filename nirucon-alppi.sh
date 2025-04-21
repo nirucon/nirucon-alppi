@@ -292,9 +292,8 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    print_msg info "Installing PhotoGIMP by merging GIMP config..."
+    print_msg info "Installing PhotoGIMP by applying full .config layout..."
 
-    # Säkerställ beroenden
     for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
             print_msg warn "$dep is not installed. Installing it..."
@@ -302,59 +301,40 @@ install_photogimp() {
         fi
     done
 
-    # Skapa temp-katalog
     local temp_dir
     temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temp dir"
 
-    # Ladda ner PhotoGIMP
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
         print_msg error "Failed to download PhotoGIMP"
         rm -rf "$temp_dir"
         return 1
     }
 
-    # Packa upp
     unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" || {
         print_msg error "Failed to unzip PhotoGIMP"
         rm -rf "$temp_dir"
         return 1
     }
 
-    # Hämta rätt källa
-    local photogimp_config="$temp_dir/PhotoGIMP-master/.config/GIMP"
-    if [[ ! -d "$photogimp_config" ]]; then
-        print_msg error "PhotoGIMP GIMP config directory not found"
+    local photogimp_config_dir="$temp_dir/PhotoGIMP-master/.config"
+
+    if [[ ! -d "$photogimp_config_dir" ]]; then
+        print_msg error ".config folder not found in PhotoGIMP archive"
         rm -rf "$temp_dir"
         return 1
     fi
 
-    # Identifiera vilken version som finns i configen
-    local version_dir
-    version_dir=$(find "$photogimp_config" -maxdepth 1 -type d -name "2.10" -o -name "3.0" | head -n 1)
-    if [[ -z "$version_dir" ]]; then
-        print_msg error "No supported GIMP version directory found in PhotoGIMP config"
-        rm -rf "$temp_dir"
-        return 1
-    fi
+    # Backup av hela ~/.config
+    local backup_dir="$HOME/.config.bak.photogimp.$(date +%s)"
+    print_msg info "Backing up ~/.config to $backup_dir"
+    cp -r "$HOME/.config" "$backup_dir" || print_msg warn "Could not backup ~/.config"
 
-    # Målmapp (användarens GIMP-konfig)
-    local gimp_target="$HOME/.config/GIMP/$(basename "$version_dir")"
+    # Kopiera över PhotoGIMP:s .config till användarens ~/.config
+    print_msg info "Copying PhotoGIMP's .config into ~/.config"
+    cp -rf "$photogimp_config_dir/"* "$HOME/.config/" || print_msg error "Failed to apply PhotoGIMP config"
 
-    # Backup
-    if [[ -d "$gimp_target" ]]; then
-        cp -r "$gimp_target" "${gimp_target}.bak.$(date +%s)"
-        print_msg info "Backed up existing GIMP config to ${gimp_target}.bak.*"
-    fi
-
-    # Kopiera in innehållet exakt som du gjorde manuellt
-    mkdir -p "$gimp_target"
-    cp -rf "$version_dir/"* "$gimp_target/" || print_msg error "Failed to copy PhotoGIMP config"
-
-    # Rensa
     rm -rf "$temp_dir"
-
-    print_msg success "PhotoGIMP successfully applied to $gimp_target"
-    echo -e "${YELLOW}Restart GIMP to see the changes.${RESET}"
+    print_msg success "PhotoGIMP configuration applied. Restart GIMP to see the changes."
 }
 
 check_orphans() {
