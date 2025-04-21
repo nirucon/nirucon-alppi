@@ -292,8 +292,9 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    print_msg info "Installing PhotoGIMP config directly into ~/.config/GIMP/3.0"
+    print_msg info "Installing PhotoGIMP: applying all .config content to your ~/.config folder"
 
+    # Kontrollera beroenden
     for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
             print_msg warn "$dep is not installed. Installing it..."
@@ -301,43 +302,46 @@ install_photogimp() {
         fi
     done
 
+    # Skapa temporär katalog
     local temp_dir
     temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temp dir"
 
+    # Ladda ner zipfil
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
         print_msg error "Failed to download PhotoGIMP"
         rm -rf "$temp_dir"
         return 1
     }
 
+    # Packa upp zipfilen
     unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" || {
         print_msg error "Failed to unzip PhotoGIMP"
         rm -rf "$temp_dir"
         return 1
     }
 
-    local source_dir="$temp_dir/PhotoGIMP-master/.config/GIMP/3.0"
-    local target_dir="$HOME/.config/GIMP/3.0"
+    # Källkatalog i zippen
+    local source_dir="$temp_dir/PhotoGIMP-master/.config"
+    local target_dir="$HOME/.config"
 
     if [[ ! -d "$source_dir" ]]; then
-        print_msg error "Expected source directory not found: $source_dir"
+        print_msg error "Expected .config folder not found in archive"
         rm -rf "$temp_dir"
         return 1
     fi
 
-    # Backup gammal konfig
-    if [[ -d "$target_dir" ]]; then
-        cp -r "$target_dir" "${target_dir}.bak.$(date +%s)"
-        print_msg info "Backed up existing GIMP config to ${target_dir}.bak.*"
-    fi
+    # Backup hela ~/.config (frivilligt – kommentera bort om du vill)
+    local backup_dir="$HOME/.config.bak.photogimp.$(date +%s)"
+    print_msg info "Backing up ~/.config to $backup_dir"
+    cp -r "$target_dir" "$backup_dir" || print_msg warn "Backup failed, continuing anyway"
 
-    mkdir -p "$target_dir"
-    # 🔥 Viktigt! Kopiera ALLT, inklusive dolda filer
-    cp -rf "$source_dir"/. "$target_dir"/ || print_msg error "Failed to copy PhotoGIMP config"
+    # Kopiera hela .config-innehållet till ~/.config (inkl dolda filer)
+    print_msg info "Copying PhotoGIMP config into ~/.config..."
+    cp -rf "$source_dir"/. "$target_dir"/ || print_msg error "Failed to copy .config contents"
 
+    # Rensa temporärt
     rm -rf "$temp_dir"
-    print_msg success "PhotoGIMP configuration copied into ~/.config/GIMP/3.0"
-    echo -e "${YELLOW}Starta om GIMP för att se ändringarna.${RESET}"
+    print_msg success "PhotoGIMP installation complete. Restart GIMP to see changes."
 }
 
 check_orphans() {
