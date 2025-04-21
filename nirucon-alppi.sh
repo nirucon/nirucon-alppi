@@ -449,6 +449,7 @@ AUR_PKGS=(
     linux-zen
     dxvk-bin
     goverlay
+    hunspell-sv
 )
 if lspci | grep -i nvidia &>/dev/null; then
     GAMING_PKGS+=(nvidia nvidia-utils lib32-nvidia-utils)
