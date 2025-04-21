@@ -292,51 +292,42 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    print_msg info "Installing PhotoGIMP with forced GIMP config reset"
+    echo "🔧 Installerar PhotoGIMP..."
 
+    # Steg 1: Kolla beroenden
     for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
-            print_msg warn "$dep is not installed. Installing it..."
-            sudo pacman -S --noconfirm --needed "$dep" || print_msg error "Failed to install $dep"
+            echo "❗ $dep saknas. Installerar..."
+            sudo pacman -S --noconfirm --needed "$dep" || { echo "❌ Kunde inte installera $dep"; return 1; }
         fi
     done
 
-    local temp_dir
-    temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temp dir"
-
+    # Steg 2: Ladda ner och packa upp
+    temp_dir="/tmp/photogimp_temp_$$"
+    mkdir -p "$temp_dir"
+    echo "⬇️ Laddar ner PhotoGIMP..."
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
-        print_msg error "Failed to download PhotoGIMP"
-        rm -rf "$temp_dir"
-        return 1
-    }
+        echo "❌ Kunde inte ladda ner zip"; return 1; }
 
-    unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" || {
-        print_msg error "Failed to unzip PhotoGIMP"
-        rm -rf "$temp_dir"
-        return 1
-    }
+    echo "📦 Packar upp..."
+    unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" > /dev/null
 
-    local source_dir="$temp_dir/PhotoGIMP-master/.config/GIMP/3.0"
-    local target_dir="$HOME/.config/GIMP/3.0"
+    source_config="$temp_dir/PhotoGIMP-master/.config"
+    target_config="$HOME/.config"
 
-    if [[ ! -d "$source_dir" ]]; then
-        print_msg error "PhotoGIMP config not found"
-        rm -rf "$temp_dir"
+    if [[ ! -d "$source_config" ]]; then
+        echo "❌ Kunde inte hitta .config i zip-filen"
         return 1
     fi
 
-    # Backup gammal GIMP-konfig
-    if [[ -d "$target_dir" ]]; then
-        mv "$target_dir" "${target_dir}.bak.$(date +%s)"
-        print_msg info "Backed up old config"
-    fi
+    echo "🧹 Raderar tidigare GIMP-konfiguration..."
+    rm -rf "$target_config/GIMP"
 
-    # Kopiera in exakt allt – tvingad ny layout
-    mkdir -p "$target_dir"
-    cp -rf "$source_dir"/. "$target_dir"/ || print_msg error "Failed to copy PhotoGIMP config"
+    echo "💾 Kopierar PhotoGIMP-konfiguration till ~/.config..."
+    cp -av "$source_config"/. "$target_config"/
 
-    rm -rf "$temp_dir"
-    print_msg success "PhotoGIMP installed. Restart GIMP to see changes."
+    echo "✅ Klart! Starta om GIMP för att se PhotoGIMP-layouten."
+    echo "🕵️‍♂️ Om du vill felsöka, kolla temporära filer i: $temp_dir"
 }
 
 check_orphans() {
