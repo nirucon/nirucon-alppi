@@ -292,7 +292,7 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    print_msg info "Installing PhotoGIMP by applying full .config layout..."
+    print_msg info "Installing PhotoGIMP config directly into ~/.config/GIMP/3.0"
 
     for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
@@ -316,25 +316,27 @@ install_photogimp() {
         return 1
     }
 
-    local photogimp_config_dir="$temp_dir/PhotoGIMP-master/.config"
+    local source_dir="$temp_dir/PhotoGIMP-master/.config/GIMP/3.0"
+    local target_dir="$HOME/.config/GIMP/3.0"
 
-    if [[ ! -d "$photogimp_config_dir" ]]; then
-        print_msg error ".config folder not found in PhotoGIMP archive"
+    if [[ ! -d "$source_dir" ]]; then
+        print_msg error "Expected source directory not found: $source_dir"
         rm -rf "$temp_dir"
         return 1
     fi
 
-    # Backup av hela ~/.config
-    local backup_dir="$HOME/.config.bak.photogimp.$(date +%s)"
-    print_msg info "Backing up ~/.config to $backup_dir"
-    cp -r "$HOME/.config" "$backup_dir" || print_msg warn "Could not backup ~/.config"
+    # Backup gammal konfig
+    if [[ -d "$target_dir" ]]; then
+        cp -r "$target_dir" "${target_dir}.bak.$(date +%s)"
+        print_msg info "Backed up existing GIMP config to ${target_dir}.bak.*"
+    fi
 
-    # Kopiera över PhotoGIMP:s .config till användarens ~/.config
-    print_msg info "Copying PhotoGIMP's .config into ~/.config"
-    cp -rf "$photogimp_config_dir/"* "$HOME/.config/" || print_msg error "Failed to apply PhotoGIMP config"
+    mkdir -p "$target_dir"
+    cp -rf "$source_dir/"* "$target_dir/" || print_msg error "Failed to copy PhotoGIMP config"
 
     rm -rf "$temp_dir"
-    print_msg success "PhotoGIMP configuration applied. Restart GIMP to see the changes."
+    print_msg success "PhotoGIMP configuration copied into ~/.config/GIMP/3.0"
+    echo -e "${YELLOW}Starta om GIMP för att se ändringarna.${RESET}"
 }
 
 check_orphans() {
