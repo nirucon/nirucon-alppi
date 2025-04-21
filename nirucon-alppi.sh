@@ -292,74 +292,69 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    print_msg info "Installing PhotoGIMP for GIMP..."
+    print_msg info "Installing PhotoGIMP by merging GIMP config..."
 
-    # Kontrollera att nödvändiga verktyg finns
-    for dep in curl unzip gimp; do
+    # Säkerställ beroenden
+    for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
-            print_msg warn "$dep is not installed. Installing it now..."
+            print_msg warn "$dep is not installed. Installing it..."
             sudo pacman -S --noconfirm --needed "$dep" || print_msg error "Failed to install $dep"
         fi
     done
 
-    # Hämta GIMP-versionen (t.ex. 2.10 eller 3.0)
-    local gimp_version
-    if gimp --version | grep -q "2.10"; then
-        gimp_version="2.10"
-    else
-        gimp_version="3.0"
-    fi
-
-    # Skapa temporär arbetskatalog
+    # Skapa temp-katalog
     local temp_dir
-    temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temporary directory"
+    temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temp dir"
 
-    # Ladda ner och packa upp PhotoGIMP
+    # Ladda ner PhotoGIMP
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
-        print_msg warn "Failed to download PhotoGIMP"
+        print_msg error "Failed to download PhotoGIMP"
         rm -rf "$temp_dir"
         return 1
     }
+
+    # Packa upp
     unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" || {
-        print_msg warn "Failed to unzip PhotoGIMP"
+        print_msg error "Failed to unzip PhotoGIMP"
         rm -rf "$temp_dir"
         return 1
     }
 
-    # Hitta rätt konfigurationskatalog
-    local photogimp_config_dir
-    photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -type d -path "*/GIMP/$gimp_version" | head -n 1)
-
-    if [[ -z "$photogimp_config_dir" ]]; then
-        print_msg warn "PhotoGIMP configuration for GIMP $gimp_version not found. Skipping."
+    # Hämta rätt källa
+    local photogimp_config="$temp_dir/PhotoGIMP-master/.config/GIMP"
+    if [[ ! -d "$photogimp_config" ]]; then
+        print_msg error "PhotoGIMP GIMP config directory not found"
         rm -rf "$temp_dir"
         return 1
     fi
 
-    # Målmapp för GIMP-konfiguration
-    local gimp_config_dir="$HOME/.config/GIMP/$gimp_version"
-
-    # Säkerhetskopia av befintlig konfiguration
-    if [[ -d "$gimp_config_dir" ]]; then
-        print_msg info "Backing up existing GIMP configuration to $gimp_config_dir.bak..."
-        cp -r "$gimp_config_dir" "$gimp_config_dir.bak" || {
-            print_msg warn "Failed to backup GIMP configuration"
-            rm -rf "$temp_dir"
-            return 1
-        }
-    fi
-
-    # Applicera PhotoGIMP-konfiguration
-    mkdir -p "$gimp_config_dir"
-    print_msg info "Applying PhotoGIMP configuration to $gimp_config_dir..."
-    cp -r "$photogimp_config_dir/"* "$gimp_config_dir/" || {
-        print_msg warn "Failed to apply PhotoGIMP configuration"
+    # Identifiera vilken version som finns i configen
+    local version_dir
+    version_dir=$(find "$photogimp_config" -maxdepth 1 -type d -name "2.10" -o -name "3.0" | head -n 1)
+    if [[ -z "$version_dir" ]]; then
+        print_msg error "No supported GIMP version directory found in PhotoGIMP config"
         rm -rf "$temp_dir"
         return 1
-    }
+    fi
 
+    # Målmapp (användarens GIMP-konfig)
+    local gimp_target="$HOME/.config/GIMP/$(basename "$version_dir")"
+
+    # Backup
+    if [[ -d "$gimp_target" ]]; then
+        cp -r "$gimp_target" "${gimp_target}.bak.$(date +%s)"
+        print_msg info "Backed up existing GIMP config to ${gimp_target}.bak.*"
+    fi
+
+    # Kopiera in innehållet exakt som du gjorde manuellt
+    mkdir -p "$gimp_target"
+    cp -rf "$version_dir/"* "$gimp_target/" || print_msg error "Failed to copy PhotoGIMP config"
+
+    # Rensa
     rm -rf "$temp_dir"
-    print_msg success "PhotoGIMP installed and configured for GIMP $gimp_version"
+
+    print_msg success "PhotoGIMP successfully applied to $gimp_target"
+    echo -e "${YELLOW}Restart GIMP to see the changes.${RESET}"
 }
 
 check_orphans() {
