@@ -293,21 +293,28 @@ install_aur_pkgs() {
 
 install_photogimp() {
     print_msg info "Installing PhotoGIMP for GIMP..."
-    if ! command -v curl &>/dev/null; then
-        print_msg warn "curl is not installed. Installing it now..."
-        sudo pacman -S --noconfirm --needed curl || print_msg error "Failed to install curl"
-    fi
-    if ! command -v unzip &>/dev/null; then
-        print_msg warn "unzip is not installed. Installing it now..."
-        sudo pacman -S --noconfirm --needed unzip || print_msg error "Failed to install unzip"
-    fi
-    if ! pacman -Q gimp &>/dev/null; then
-        print_msg warn "GIMP is not installed. Installing it now..."
-        sudo pacman -S --noconfirm --needed gimp || print_msg error "Failed to install GIMP"
+
+    # Kontrollera att nödvändiga verktyg finns
+    for dep in curl unzip gimp; do
+        if ! command -v "$dep" &>/dev/null; then
+            print_msg warn "$dep is not installed. Installing it now..."
+            sudo pacman -S --noconfirm --needed "$dep" || print_msg error "Failed to install $dep"
+        fi
+    done
+
+    # Hämta GIMP-versionen (t.ex. 2.10 eller 3.0)
+    local gimp_version
+    if gimp --version | grep -q "2.10"; then
+        gimp_version="2.10"
+    else
+        gimp_version="3.0"
     fi
 
+    # Skapa temporär arbetskatalog
     local temp_dir
     temp_dir=$(mktemp -d -t photogimp_temp.XXXXXX) || print_msg error "Failed to create temporary directory"
+
+    # Ladda ner och packa upp PhotoGIMP
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
         print_msg warn "Failed to download PhotoGIMP"
         rm -rf "$temp_dir"
@@ -319,22 +326,20 @@ install_photogimp() {
         return 1
     }
 
+    # Hitta rätt konfigurationskatalog
     local photogimp_config_dir
-    if [[ -d "$temp_dir/PhotoGIMP-master/GIMP/3.0" ]]; then
-        photogimp_config_dir="$temp_dir/PhotoGIMP-master/GIMP/3.0"
-    elif [[ -d "$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0" ]]; then
-        photogimp_config_dir="$temp_dir/PhotoGIMP-master/.var/app/org.gimp.GIMP/config/GIMP/3.0"
-    else
-        photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -maxdepth 3 -type d -path "*/GIMP/*" | head -n 1)
-        if [[ -z "$photogimp_config_dir" ]]; then
-            print_msg warn "PhotoGIMP configuration directory not found. Skipping configuration copy."
-            rm -rf "$temp_dir"
-            return 1
-        fi
-        print_msg info "Using $photogimp_config_dir as fallback for GIMP configuration."
+    photogimp_config_dir=$(find "$temp_dir/PhotoGIMP-master" -type d -path "*/GIMP/$gimp_version" | head -n 1)
+
+    if [[ -z "$photogimp_config_dir" ]]; then
+        print_msg warn "PhotoGIMP configuration for GIMP $gimp_version not found. Skipping."
+        rm -rf "$temp_dir"
+        return 1
     fi
 
-    local gimp_config_dir="$HOME/.config/GIMP/3.0"
+    # Målmapp för GIMP-konfiguration
+    local gimp_config_dir="$HOME/.config/GIMP/$gimp_version"
+
+    # Säkerhetskopia av befintlig konfiguration
     if [[ -d "$gimp_config_dir" ]]; then
         print_msg info "Backing up existing GIMP configuration to $gimp_config_dir.bak..."
         cp -r "$gimp_config_dir" "$gimp_config_dir.bak" || {
@@ -344,6 +349,7 @@ install_photogimp() {
         }
     fi
 
+    # Applicera PhotoGIMP-konfiguration
     mkdir -p "$gimp_config_dir"
     print_msg info "Applying PhotoGIMP configuration to $gimp_config_dir..."
     cp -r "$photogimp_config_dir/"* "$gimp_config_dir/" || {
@@ -353,7 +359,7 @@ install_photogimp() {
     }
 
     rm -rf "$temp_dir"
-    print_msg success "PhotoGIMP installed and configured for GIMP 3.0"
+    print_msg success "PhotoGIMP installed and configured for GIMP $gimp_version"
 }
 
 check_orphans() {
