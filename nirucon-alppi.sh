@@ -292,42 +292,50 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    echo "🔧 Installerar PhotoGIMP..."
+    echo "🔧 Installing PhotoGIMP..."
 
-    # Steg 1: Kolla beroenden
+    # Determine the actual user's home directory, even if run with sudo
+    if [ "$SUDO_USER" ]; then
+        USER_HOME=$(eval echo "~$SUDO_USER")
+    else
+        USER_HOME="$HOME"
+    fi
+
+    # Ensure dependencies are present
     for dep in curl unzip; do
         if ! command -v "$dep" &>/dev/null; then
-            echo "❗ $dep saknas. Installerar..."
-            sudo pacman -S --noconfirm --needed "$dep" || { echo "❌ Kunde inte installera $dep"; return 1; }
+            echo "❗ $dep is missing. Installing..."
+            sudo pacman -S --noconfirm --needed "$dep" || { echo "❌ Failed to install $dep"; return 1; }
         fi
     done
 
-    # Steg 2: Ladda ner och packa upp
+    # Create temporary directory
     temp_dir="/tmp/photogimp_temp_$$"
     mkdir -p "$temp_dir"
-    echo "⬇️ Laddar ner PhotoGIMP..."
+    echo "⬇️ Downloading PhotoGIMP..."
     curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
-        echo "❌ Kunde inte ladda ner zip"; return 1; }
+        echo "❌ Failed to download PhotoGIMP zip"; return 1; }
 
-    echo "📦 Packar upp..."
+    echo "📦 Extracting archive..."
     unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" > /dev/null
 
     source_config="$temp_dir/PhotoGIMP-master/.config"
-    target_config="$HOME/.config"
+    target_config="$USER_HOME/.config"
 
     if [[ ! -d "$source_config" ]]; then
-        echo "❌ Kunde inte hitta .config i zip-filen"
+        echo "❌ Could not find .config folder inside the archive"
         return 1
     fi
 
-    echo "🧹 Raderar tidigare GIMP-konfiguration..."
+    echo "🧹 Removing old GIMP config (if any)..."
     rm -rf "$target_config/GIMP"
 
-    echo "💾 Kopierar PhotoGIMP-konfiguration till ~/.config..."
+    echo "📁 Copying PhotoGIMP configuration to $target_config ..."
     cp -av "$source_config"/. "$target_config"/
 
-    echo "✅ Klart! Starta om GIMP för att se PhotoGIMP-layouten."
-    echo "🕵️‍♂️ Om du vill felsöka, kolla temporära filer i: $temp_dir"
+    echo "✅ PhotoGIMP has been applied!"
+    echo "🚀 Launch GIMP to see the new layout."
+    echo "🧪 Temporary folder with source files: $temp_dir"
 }
 
 check_orphans() {
