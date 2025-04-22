@@ -31,6 +31,7 @@ ERROR_LOG="${LOGFILE}.errors"
 FAILED_LOG="${LOGFILE}.failed"
 MIN_DISK_SPACE_MB=2000  # Minimum disk space required in MB
 MAX_RETRIES=3  # Max retries for network operations
+CURL_TIMEOUT=30  # Timeout for curl commands in seconds
 
 # Colors
 if command -v tput &>/dev/null; then
@@ -50,8 +51,8 @@ exec > >(tee -a "${LOGFILE}") 2> >(tee -a "${ERROR_LOG}" >&2)
 # Handle interrupts (Ctrl+C)
 cleanup() {
     print_msg warn "Script interrupted, cleaning up..."
-    [[ -f "/tmp/pacman.conf.tmp" ]] && rm -f /tmp/pacman.conf.tmp
-    [[ -d "/tmp/photogimp_temp" ]] && rm -rf /tmp/photogimp_temp
+    [[ -f "/tmp/pacman.conf.tmp" ]] && rm -f "/tmp/pacman.conf.tmp"
+    [[ -d "/tmp/photogimp_temp" ]] && rm -rf "/tmp/photogimp_temp"
     print_msg info "Exiting safely. Logs saved at $LOGFILE"
     exit 1
 }
@@ -59,12 +60,14 @@ trap cleanup SIGINT SIGTERM
 
 print_msg() {
     local type="$1" message="$2"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     case "$type" in
-        info)    echo -e "${BLUE}${BOLD}[INFO ]${RESET} $message";;
-        success) echo -e "${GREEN}${BOLD}[ OK  ]${RESET} $message";;
-        warn)    echo -e "${YELLOW}${BOLD}[WARN ]${RESET} $message";;
-        error)   echo -e "${RED}${BOLD}[FAIL ]${RESET} $message"; exit 1;;
-        prompt)  echo -e "${MAGENTA}${BOLD}[INPUT]${RESET} $message";;
+        info)    echo -e "${BLUE}${BOLD}[$timestamp INFO ]${RESET} $message";;
+        success) echo -e "${GREEN}${BOLD}[$timestamp OK   ]${RESET} $message";;
+        warn)    echo -e "${YELLOW}${BOLD}[$timestamp WARN ]${RESET} $message";;
+        error)   echo -e "${RED}${BOLD}[$timestamp FAIL ]${RESET} $message"; exit 1;;
+        prompt)  echo -e "${MAGENTA}${BOLD}[$timestamp INPUT]${RESET} $message";;
     esac
 }
 
@@ -81,7 +84,7 @@ check_internet() {
     local endpoints=("archlinux.org" "google.com" "cloudflare.com")
     local success=false
     for endpoint in "${endpoints[@]}"; do
-        if ping -c 1 "$endpoint" &>/dev/null || curl -s --head --fail "https://$endpoint" &>/dev/null; then
+        if ping -c 1 "$endpoint" &>/dev/null || curl -s --head --fail --connect-timeout "${CURL_TIMEOUT}" "https://$endpoint" &>/dev/null; then
             success=true
             break
         fi
@@ -130,11 +133,13 @@ check_bootloader() {
 
 check_essential_tools() {
     print_msg info "Checking essential tools"
-    local tools=(curl unzip lspci grep sed awk less)
+    local tools=(curl unzip lspci grep sed awk less pacman)
     for tool in "${tools[@]}"; do
         if ! command -v "$tool" &>/dev/null; then
             print_msg info "$tool is missing. Installing..."
-            sudo pacman -S --noconfirm --needed "${tool}" || print_msg error "Failed to install $tool."
+            if ! sudo pacman -S --noconfirm --needed "${tool}" 2>>"${ERROR_LOG}"; then
+                print_msg error "Failed to install $tool."
+            fi
         fi
     done
     print_msg success "All essential tools verified"
@@ -143,18 +148,27 @@ check_essential_tools() {
 backup_file() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        local ts=$(date +%F_%H%M%S)
-        sudo cp "$file" "${file}.bak.${ts}" && print_msg success "Backed up $file to ${file}.bak.${ts}"
+        local ts
+        ts=$(date +%F_%H%M%S)
+        if sudo cp "$file" "${file}.bak.${ts}"; then
+            print_msg success "Backed up $file to ${file}.bak.${ts}"
+        else
+            print_msg error "Failed to back up $file."
+        fi
     else
         print_msg warn "$file not found, skipping backup"
     fi
 }
 
 rollback_pacman_conf() {
-    local latest_backup=$(ls -t /etc/pacman.conf.bak.* 2>/dev/null | head -1)
+    local latest_backup
+    latest_backup=$(ls -t /etc/pacman.conf.bak.* 2>/dev/null | head -1)
     if [[ -n "$latest_backup" ]]; then
-        sudo mv "$latest_backup" /etc/pacman.conf
-        print_msg success "Restored pacman.conf from $latest_backup"
+        if sudo mv "$latest_backup" /etc/pacman.conf; then
+            print_msg success "Restored pacman.conf from $latest_backup"
+        else
+            print_msg error "Failed to restore pacman.conf from $latest_backup."
+        fi
     else
         print_msg warn "No backup found, cannot restore pacman.conf"
     fi
@@ -168,10 +182,15 @@ backup_configs() {
 
 refresh_mirrorlist() {
     print_msg info "Refreshing mirrorlist"
-    sudo pacman -Syy
+    if ! sudo pacman -Syy 2>>"${ERROR_LOG}"; then
+        print_msg error "Failed to synchronize pacman repositories."
+    fi
     if command -v reflector &>/dev/null; then
-        sudo reflector --country 'SE,DE,FR' --latest 10 --sort rate --save /etc/pacman.d/mirrorlist
-        print_msg success "Mirrorlist refreshed with reflector"
+        if sudo reflector --country 'SE,DE,FR' --latest 10 --sort rate --save /etc/pacman.d/mirrorlist 2>>"${ERROR_LOG}"; then
+            print_msg success "Mirrorlist refreshed with reflector"
+        else
+            print_msg warn "Failed to refresh mirrorlist with reflector, continuing with existing mirrorlist"
+        fi
     else
         print_msg warn "reflector not found, using existing mirrorlist"
     fi
@@ -184,19 +203,24 @@ enable_multilib() {
     else
         print_msg info "Uncommenting or adding [multilib]"
         local tmp_conf="/tmp/pacman.conf.tmp"
-        cp /etc/pacman.conf "${tmp_conf}"
-        sed -i '/^#\[multilib\]/s/^#//' "${tmp_conf}"
-        sed -i '/^#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' "${tmp_conf}"
-        if ! grep -q '^\[multilib\]' "${tmp_conf}"; then
-            echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> "${tmp_conf}"
-        fi
-        if sudo mv "${tmp_conf}" /etc/pacman.conf; then
-            print_msg success "[multilib] enabled"
+        if cp /etc/pacman.conf "${tmp_conf}"; then
+            sed -i '/^#\[multilib\]/s/^#//' "${tmp_conf}"
+            sed -i '/^#Include = \/etc\/pacman.d\/mirrorlist/s/^#//' "${tmp_conf}"
+            if ! grep -q '^\[multilib\]' "${tmp_conf}"; then
+                echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> "${tmp_conf}"
+            fi
+            if sudo mv "${tmp_conf}" /etc/pacman.conf; then
+                print_msg success "[multilib] enabled"
+            else
+                print_msg error "Failed to update pacman.conf."
+            fi
         else
-            print_msg error "Failed to update pacman.conf"
+            print_msg error "Failed to copy pacman.conf to temporary file."
         fi
     fi
-    sudo pacman -Syu --noconfirm
+    if ! sudo pacman -Syu --noconfirm 2>>"${ERROR_LOG}"; then
+        print_msg error "Failed to update system after enabling multilib."
+    fi
 }
 
 enable_chaotic_aur() {
@@ -208,34 +232,45 @@ enable_chaotic_aur() {
         if ! pacman -Q chaotic-keyring >/dev/null 2>&1; then
             local attempt=1
             while [[ $attempt -le $MAX_RETRIES ]]; do
-                if sudo pacman-key --recv-key "${CHAOTIC_KEY}" --keyserver "${CHAOTIC_KEYSERVER}"; then
+                if sudo pacman-key --recv-key "${CHAOTIC_KEY}" --keyserver "${CHAOTIC_KEYSERVER}" 2>>"${ERROR_LOG}"; then
                     break
                 fi
                 print_msg warn "Failed to retrieve Chaotic-AUR key (attempt $attempt/$MAX_RETRIES)"
                 ((attempt++))
                 sleep 2
             done
-            [[ $attempt -le $MAX_RETRIES ]] || print_msg error "Failed to retrieve Chaotic-AUR key after $MAX_RETRIES attempts."
-            sudo pacman-key --lsign-key "${CHAOTIC_KEY}"
-            sudo pacman -U --noconfirm \
+            if [[ $attempt -gt $MAX_RETRIES ]]; then
+                print_msg error "Failed to retrieve Chaotic-AUR key after $MAX_RETRIES attempts."
+            fi
+            if ! sudo pacman-key --lsign-key "${CHAOTIC_KEY}" 2>>"${ERROR_LOG}"; then
+                print_msg error "Failed to sign Chaotic-AUR key."
+            fi
+            if ! sudo pacman -U --noconfirm \
                 "${CHAOTIC_URL}/chaotic-keyring.pkg.tar.zst" \
-                "${CHAOTIC_URL}/chaotic-mirrorlist.pkg.tar.zst" || print_msg error "Failed to install Chaotic-AUR keyring/mirrorlist."
+                "${CHAOTIC_URL}/chaotic-mirrorlist.pkg.tar.zst" 2>>"${ERROR_LOG}"; then
+                print_msg error "Failed to install Chaotic-AUR keyring/mirrorlist."
+            fi
             print_msg success "Chaotic-AUR keyring and mirrorlist installed"
         else
             print_msg success "Chaotic-AUR keyring already installed"
         fi
         print_msg info "Adding [chaotic-aur] to pacman.conf"
         local tmp_conf="/tmp/pacman.conf.tmp"
-        cp /etc/pacman.conf "${tmp_conf}"
-        echo -e "\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist" >> "${tmp_conf}"
-        if sudo mv "${tmp_conf}" /etc/pacman.conf; then
-            print_msg success "Chaotic-AUR added to pacman.conf"
+        if cp /etc/pacman.conf "${tmp_conf}"; then
+            echo -e "\n[chaotic-aur]\nInclude = /etc/pacman.d/chaotic-mirrorlist" >> "${tmp_conf}"
+            if sudo mv "${tmp_conf}" /etc/pacman.conf; then
+                print_msg success "Chaotic-AUR added to pacman.conf"
+            else
+                rollback_pacman_conf
+                print_msg error "Failed to update pacman.conf."
+            fi
         else
-            rollback_pacman_conf
-            print_msg error "Failed to update pacman.conf"
+            print_msg error "Failed to copy pacman.conf to temporary file."
         fi
     fi
-    sudo pacman -Syu --noconfirm
+    if ! sudo pacman -Syu --noconfirm 2>>"${ERROR_LOG}"; then
+        print_msg error "Failed to update system after enabling Chaotic-AUR."
+    fi
     print_msg success "Chaotic-AUR fully enabled"
 }
 
@@ -291,6 +326,7 @@ review_aur_pkgbuild() {
     else
         print_msg warn "Could not retrieve PKGBUILD for $pkg, proceeding without review"
     fi
+    return 0
 }
 
 install_pacman_pkgs() {
@@ -326,8 +362,8 @@ install_aur_pkgs() {
     for pkg in "${pkgs[@]}"; do
         if [[ "$pkg" == "linux-zen" && -n "${ZEN_APPROVED:-}" ]]; then
             filtered_pkgs+=("$pkg")
-        else
-            review_aur_pkgbuild "$pkg" && filtered_pkgs+=("$pkg")
+        elif review_aur_pkgbuild "$pkg"; then
+            filtered_pkgs+=("$pkg")
         fi
     done
     if [[ ${#filtered_pkgs[@]} -gt 0 ]]; then
@@ -335,6 +371,7 @@ install_aur_pkgs() {
             print_msg success "AUR packages installed"
         else
             print_msg warn "Some AUR packages failed to install. Check $ERROR_LOG for details."
+            echo "Failed AUR packages: ${filtered_pkgs[*]}" >> "${FAILED_LOG}"
         fi
     else
         print_msg info "No AUR packages selected for installation"
@@ -359,15 +396,15 @@ install_photogimp() {
 
     # Check GIMP version (PhotoGIMP is designed for GIMP 2.10)
     local gimp_version
-    gimp_version=$(gimp --version | head -n1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
+    gimp_version=$(gimp --version | head -n1 | grep -o '[0-9]\.[0-9]*\.[0-9]*' || echo "unknown")
     if [[ "$gimp_version" != "2.10"* ]]; then
         print_msg warn "Detected GIMP version $gimp_version. PhotoGIMP is optimized for GIMP 2.10."
         print_msg prompt "Proceed with installation? [y/N]: "
         read -r answer
-        [[ "$answer" =~ ^[Yy]$ ]] || {
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
             print_msg info "Aborting PhotoGIMP installation."
             return 1
-        }
+        fi
     fi
 
     # Check dependencies
@@ -375,10 +412,9 @@ install_photogimp() {
     for dep in "${deps[@]}"; do
         if ! command -v "$dep" &>/dev/null; then
             print_msg info "$dep is missing. Installing..."
-            sudo pacman -S --noconfirm --needed "$dep" || {
+            if ! sudo pacman -S --noconfirm --needed "$dep" 2>>"${ERROR_LOG}"; then
                 print_msg error "Failed to install $dep."
-                return 1
-            }
+            fi
         fi
     done
 
@@ -390,7 +426,7 @@ install_photogimp() {
     fi
 
     # Step 2: Confirm overwrite of existing GIMP configs
-    local config_dirs=("$user_home/.config/GIMP" "$user_home/.local/GIMP")
+    local config_dirs=("$user_home/.config/GIMP" "$user_home/.local/share/GIMP")
     local overwrite_needed=false
     for dir in "${config_dirs[@]}"; do
         if [[ -d "$dir" ]]; then
@@ -401,73 +437,58 @@ install_photogimp() {
     if [[ "$overwrite_needed" == true ]]; then
         print_msg prompt "Overwrite existing GIMP configurations? [y/N]: "
         read -r answer
-        [[ "$answer" =~ ^[Yy]$ ]] || {
+        if [[ ! "$answer" =~ ^[Yy]$ ]]; then
             print_msg info "Aborting PhotoGIMP installation."
             return 1
-        }
+        fi
     fi
 
     # Step 3: Download and extract PhotoGIMP
     local temp_dir="/tmp/photogimp_temp_$$"
-    mkdir -p "$temp_dir" || {
+    if ! mkdir -p "$temp_dir" 2>>"${ERROR_LOG}"; then
         print_msg error "Failed to create temporary directory $temp_dir."
-        return 1
-    }
+    fi
     local photogimp_url="https://github.com/Diolinux/PhotoGIMP/archive/master.zip"
     print_msg info "Downloading PhotoGIMP from $photogimp_url..."
     local attempt=1
     while [[ $attempt -le $MAX_RETRIES ]]; do
-        if curl -L --fail "$photogimp_url" -o "$temp_dir/PhotoGIMP.zip" 2>>"${ERROR_LOG}"; then
+        if curl -L --fail --connect-timeout "${CURL_TIMEOUT}" "$photogimp_url" -o "$temp_dir/PhotoGIMP.zip" 2>>"${ERROR_LOG}"; then
             break
         fi
         print_msg warn "Failed to download PhotoGIMP (attempt $attempt/$MAX_RETRIES)"
         ((attempt++))
         sleep 2
     done
-    [[ $attempt -le $MAX_RETRIES ]] || {
+    if [[ $attempt -gt $MAX_RETRIES ]]; then
         print_msg error "Failed to download PhotoGIMP zip after $MAX_RETRIES attempts."
-        rm -rf "$temp_dir"
-        return 1
-    }
+    fi
 
     print_msg info "Extracting archive..."
     if ! unzip -q "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" 2>>"${ERROR_LOG}"; then
         print_msg error "Failed to extract PhotoGIMP archive."
-        rm -rf "$temp_dir"
-        return 1
-    }
+    fi
 
     local source_config="$temp_dir/PhotoGIMP-master/.config/GIMP"
     if [[ ! -d "$source_config" ]]; then
         print_msg error "Could not find GIMP configuration folder in the archive."
-        rm -rf "$temp_dir"
-        return 1
-    }
+    fi
 
     # Step 4: Copy PhotoGIMP configuration to both target directories
     for target_dir in "${config_dirs[@]}"; do
         print_msg info "Copying PhotoGIMP configuration to $target_dir..."
-        mkdir -p "$(dirname "$target_dir")" || {
+        if ! mkdir -p "$(dirname "$target_dir")" 2>>"${ERROR_LOG}"; then
             print_msg error "Failed to create parent directory for $target_dir."
-            rm -rf "$temp_dir"
-            return 1
-        }
+        fi
         [[ -d "$target_dir" ]] && rm -rf "$target_dir"
-        cp -r "$source_config" "$target_dir" || {
+        if ! cp -r "$source_config" "$target_dir" 2>>"${ERROR_LOG}"; then
             print_msg error "Failed to copy PhotoGIMP configuration to $target_dir."
-            rm -rf "$temp_dir"
-            return 1
-        }
-        sudo chown -R "$user_name":"$user_name" "$target_dir" || {
+        fi
+        if ! sudo chown -R "$user_name":"$user_name" "$target_dir" 2>>"${ERROR_LOG}"; then
             print_msg error "Failed to set ownership for $target_dir."
-            rm -rf "$temp_dir"
-            return 1
-        }
-        chmod -R u+rw "$target_dir" || {
+        fi
+        if ! chmod -R u+rw "$target_dir" 2>>"${ERROR_LOG}"; then
             print_msg error "Failed to set permissions for $target_dir."
-            rm -rf "$temp_dir"
-            return 1
-        }
+        fi
     done
 
     # Step 5: Cleanup
@@ -499,9 +520,17 @@ check_orphans() {
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             for pkg in $orphans; do
                 if pacman -Q "$pkg" >/dev/null 2>&1; then
-                    sudo pacman -Rns --noconfirm "$pkg" && print_msg success "Removed $pkg"
+                    if sudo pacman -Rns --noconfirm "$pkg" 2>>"${ERROR_LOG}"; then
+                        print_msg success "Removed $pkg"
+                    else
+                        print_msg warn "Failed to remove $pkg"
+                    fi
                 elif yay -Q "$pkg" >/dev/null 2>&1; then
-                    yay -Rns --noconfirm "$pkg" && print_msg success "Removed AUR package $pkg"
+                    if yay -Rns --noconfirm "$pkg" 2>>"${ERROR_LOG}"; then
+                        print_msg success "Removed AUR package $pkg"
+                    else
+                        print_msg warn "Failed to remove AUR package $pkg"
+                    fi
                 else
                     print_msg warn "Package $pkg not found, skipping"
                 fi
@@ -518,9 +547,16 @@ clean_cache() {
     print_msg prompt "Clean pacman and yay cache? [y/N]: "
     read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
-        sudo pacman -Sc --noconfirm
-        yay -Sc --noconfirm
-        print_msg success "Package cache cleaned"
+        if sudo pacman -Sc --noconfirm 2>>"${ERROR_LOG}"; then
+            print_msg success "Pacman cache cleaned"
+        else
+            print_msg warn "Failed to clean pacman cache"
+        fi
+        if yay -Sc --noconfirm 2>>"${ERROR_LOG}"; then
+            print_msg success "Yay cache cleaned"
+        else
+            print_msg warn "Failed to clean yay cache"
+        fi
     else
         print_msg info "Skipping cache cleaning"
     fi
@@ -534,8 +570,10 @@ update_bootloader() {
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             if [[ "$BOOTLOADER" == "systemd-boot" ]]; then
                 print_msg info "Configuring systemd-boot for linux-zen..."
-                local root_part=$(findmnt -n -o SOURCE / | cut -d'[' -f1)
-                local partuuid=$(blkid -s PARTUUID -o value "$root_part")
+                local root_part
+                root_part=$(findmnt -n -o SOURCE / | cut -d'[' -f1)
+                local partuuid
+                partuuid=$(blkid -s PARTUUID -o value "$root_part" 2>>"${ERROR_LOG}")
                 if [[ -z "$partuuid" ]]; then
                     print_msg error "Could not determine PARTUUID for root partition."
                 fi
@@ -546,11 +584,15 @@ linux /vmlinuz-linux-zen
 initrd /initramfs-linux-zen.img
 options root=PARTUUID=$partuuid rw
 EOF
-                sudo bootctl install
+                if ! sudo bootctl install 2>>"${ERROR_LOG}"; then
+                    print_msg error "Failed to update systemd-boot."
+                fi
                 print_msg success "systemd-boot updated. Select 'Arch Linux (Zen)' at boot."
             elif [[ "$BOOTLOADER" == "grub" ]]; then
                 print_msg info "Configuring GRUB for linux-zen..."
-                sudo grub-mkconfig -o /boot/grub/grub.cfg
+                if ! sudo grub-mkconfig -o /boot/grub/grub.cfg 2>>"${ERROR_LOG}"; then
+                    print_msg error "Failed to update GRUB configuration."
+                fi
                 print_msg success "GRUB updated. Select linux-zen from GRUB menu at boot."
             fi
         else
@@ -641,8 +683,11 @@ enable_system_optimizations() {
     read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         if systemctl list-units --full | grep -q gamemoded.service; then
-            sudo systemctl enable --now gamemoded
-            print_msg success "gamemoded enabled"
+            if sudo systemctl enable --now gamemoded 2>>"${ERROR_LOG}"; then
+                print_msg success "gamemoded enabled"
+            else
+                print_msg warn "Failed to enable gamemoded."
+            fi
         else
             print_msg warn "gamemoded.service not found. Ensure gamemode is installed."
         fi
@@ -653,10 +698,16 @@ enable_system_optimizations() {
     print_msg prompt "Enable ZRAM for memory compression? [y/N]: "
     read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
-        sudo pacman -S --noconfirm zram-generator
-        echo -e "[zram0]\nzram-size = ram / 2" | sudo tee /etc/systemd/zram-generator.conf
-        sudo systemctl start systemd-zram-setup@zram0
-        print_msg success "ZRAM enabled"
+        if sudo pacman -S --noconfirm zram-generator 2>>"${ERROR_LOG}"; then
+            echo -e "[zram0]\nzram-size = ram / 2" | sudo tee /etc/systemd/zram-generator.conf >/dev/null
+            if sudo systemctl start systemd-zram-setup@zram0 2>>"${ERROR_LOG}"; then
+                print_msg success "ZRAM enabled"
+            else
+                print_msg warn "Failed to start ZRAM service."
+            fi
+        else
+            print_msg warn "Failed to install zram-generator."
+        fi
     else
         print_msg info "Skipping ZRAM setup"
     fi
@@ -664,8 +715,11 @@ enable_system_optimizations() {
     print_msg prompt "Enable irqbalance for network performance? [y/N]: "
     read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
-        sudo systemctl enable --now irqbalance
-        print_msg success "irqbalance enabled"
+        if sudo systemctl enable --now irqbalance 2>>"${ERROR_LOG}"; then
+            print_msg success "irqbalance enabled"
+        else
+            print_msg warn "Failed to enable irqbalance."
+        fi
     else
         print_msg info "Skipping irqbalance activation"
     fi
@@ -676,7 +730,9 @@ main() {
     print_msg info "Starting Arch Linux post-post install script"
 
     # Prompt for sudo password upfront
-    sudo -v || print_msg error "Failed to obtain sudo privileges."
+    if ! sudo -v 2>>"${ERROR_LOG}"; then
+        print_msg error "Failed to obtain sudo privileges."
+    fi
 
     # Run safety checks
     check_sudo
@@ -696,7 +752,9 @@ main() {
     check_yay
 
     print_msg info "Updating system packages"
-    sudo pacman -Syu --noconfirm
+    if ! sudo pacman -Syu --noconfirm 2>>"${ERROR_LOG}"; then
+        print_msg error "Failed to update system packages."
+    fi
     print_msg success "System up to date"
 
     check_orphans
