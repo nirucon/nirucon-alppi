@@ -292,59 +292,139 @@ install_aur_pkgs() {
 }
 
 install_photogimp() {
-    echo "🔧 Installing PhotoGIMP..."
+    print_msg info "Installing PhotoGIMP..."
 
     # Determine the actual user's home directory, even if run with sudo
-    if [ "$SUDO_USER" ]; then
-        USER_NAME="$SUDO_USER"
-        USER_HOME=$(eval echo "~$SUDO_USER")
-    else
-        USER_NAME="$USER"
-        USER_HOME="$HOME"
+    local user_name="$USER"
+    local user_home="$HOME"
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        user_name="$SUDO_USER"
+        user_home=$(eval echo "~$SUDO_USER")
     fi
 
-    # Step 1: Check and install dependencies
-    for dep in curl unzip; do
+    # Step 1: Check prerequisites
+    if ! command -v gimp &>/dev/null; then
+        print_msg error "GIMP is not installed. Please install GIMP and rerun."
+    fi
+
+    # Check GIMP version (PhotoGIMP is designed for GIMP 2.10)
+    local gimp_version
+    gimp_version=$(gimp --version | head -n1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
+    if [[ "$gimp_version" != "2.10"* ]]; then
+        print_msg warn "Detected GIMP version $gimp_version. PhotoGIMP is optimized for GIMP 2.10."
+        read -p "Proceed with installation? [y/N]: " answer
+        [[ "$answer" =~ ^[Yy]$ ]] || {
+            print_msg info "Aborting PhotoGIMP installation."
+            return 1
+        }
+    fi
+
+    # Check dependencies
+    local deps=(curl unzip)
+    for dep in "${deps[@]}"; do
         if ! command -v "$dep" &>/dev/null; then
-            echo "❗ $dep is missing. Installing..."
-            sudo pacman -S --noconfirm --needed "$dep" || { echo "❌ Failed to install $dep"; return 1; }
+            print_msg info "$dep is missing. Installing..."
+            sudo pacman -S --noconfirm --needed "$dep" || {
+                print_msg error "Failed to install $dep."
+                return 1
+            }
         fi
     done
 
-    # Step 2: Download and extract PhotoGIMP
-    temp_dir="/tmp/photogimp_temp_$$"
-    mkdir -p "$temp_dir"
-    echo "⬇️ Downloading PhotoGIMP..."
-    curl -L https://github.com/Diolinux/PhotoGIMP/archive/master.zip -o "$temp_dir/PhotoGIMP.zip" || {
-        echo "❌ Failed to download PhotoGIMP zip"; return 1; }
-
-    echo "📦 Extracting archive..."
-    unzip "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" > /dev/null
-
-    source_config="$temp_dir/PhotoGIMP-master/.config"
-    target_config="$USER_HOME/.config"
-
-    if [[ ! -d "$source_config" ]]; then
-        echo "❌ Could not find .config folder inside the archive"
-        return 1
+    # Check disk space (reuse MIN_DISK_SPACE_MB from script)
+    local available_space
+    available_space=$(df -m "$user_home" | tail -1 | awk '{print $4}')
+    if (( available_space < MIN_DISK_SPACE_MB )); then
+        print_msg error "Insufficient disk space (${available_space} MB available, ${MIN_DISK_SPACE_MB} MB required)."
     fi
 
-    # Step 3: Remove old GIMP config and apply PhotoGIMP
-    echo "🧹 Removing old GIMP configuration..."
-    rm -rf "$target_config/GIMP"
+    # Step 2: Confirm overwrite of existing GIMP configs
+    local config_dirs=("$user_home/.config/GIMP" "$user_home/.local/GIMP")
+    local overwrite_needed=false
+    for dir in "${config_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            overwrite_needed=true
+            print_msg warn "Existing GIMP configuration found at $dir."
+        fi
+    done
+    if [[ "$overwrite_needed" == true ]]; then
+        read -p "Overwrite existing GIMP configurations? [y/N]: " answer
+        [[ "$answer" =~ ^[Yy]$ ]] || {
+            print_msg info "Aborting PhotoGIMP installation."
+            return 1
+        }
+    fi
 
-    echo "💾 Copying PhotoGIMP configuration to $target_config ..."
-    cp -av "$source_config"/. "$target_config"/
+    # Step 3: Download and extract PhotoGIMP
+    local temp_dir="/tmp/photogimp_temp_$$"
+    mkdir -p "$temp_dir" || {
+        print_msg error "Failed to create temporary directory $temp_dir."
+        return 1
+    }
+    local photogimp_url="https://github.com/Diolinux/PhotoGIMP/archive/master.zip"
+    print_msg info "Downloading PhotoGIMP from $photogimp_url..."
+    if ! curl -L --fail "$photogimp_url" -o "$temp_dir/PhotoGIMP.zip"; then
+        print_msg error "Failed to download PhotoGIMP zip. Check your internet connection."
+        rm -rf "$temp_dir"
+        return 1
+    }
 
-    # Step 4: Fix ownership and permissions
-    echo "🔐 Fixing file ownership and permissions..."
-    sudo chown -R "$USER_NAME":"$USER_NAME" "$target_config/GIMP"
-    chmod -R u+rw "$target_config/GIMP"
+    print_msg info "Extracting archive..."
+    if ! unzip -q "$temp_dir/PhotoGIMP.zip" -d "$temp_dir"; then
+        print_msg error "Failed to extract PhotoGIMP archive."
+        rm -rf "$temp_dir"
+        return 1
+    }
 
-    # Step 5: Done
-    echo "✅ PhotoGIMP has been successfully installed!"
-    echo "🚀 Launch GIMP to see the new layout."
-    echo "🧪 Temporary folder with extracted files: $temp_dir (not removed in case you want to inspect)"
+    local source_config="$temp_dir/PhotoGIMP-master/.config/GIMP"
+    if [[ ! -d "$source_config" ]]; then
+        print_msg error "Could not find GIMP configuration folder in the archive."
+        rm -rf "$temp_dir"
+        return 1
+    }
+
+    # Step 4: Copy PhotoGIMP configuration to both target directories
+    for target_dir in "${config_dirs[@]}"; do
+        print_msg info "Copying PhotoGIMP configuration to $target_dir..."
+        # Ensure target directory exists
+        mkdir -p "$(dirname "$target_dir")" || {
+            print_msg error "Failed to create parent directory for $target_dir."
+            rm -rf "$temp_dir"
+            return 1
+        }
+        # Remove existing GIMP config if present
+        [[ -d "$target_dir" ]] && rm -rf "$target_dir"
+        # Copy files, preserving structure
+        cp -r "$source_config" "$target_dir" || {
+            print_msg error "Failed to copy PhotoGIMP configuration to $target_dir."
+            rm -rf "$temp_dir"
+            return 1
+        }
+        # Fix ownership and permissions
+        sudo chown -R "$user_name":"$user_name" "$target_dir" || {
+            print_msg error "Failed to set ownership for $target_dir."
+            rm -rf "$temp_dir"
+            return 1
+        }
+        chmod -R u+rw "$target_dir" || {
+            print_msg error "Failed to set permissions for $target_dir."
+            rm -rf "$temp_dir"
+            return 1
+        }
+    done
+
+    # Step 5: Cleanup
+    read -p "Remove temporary files at $temp_dir? [Y/n]: " cleanup_answer
+    if [[ ! "$cleanup_answer" =~ ^[Nn]$ ]]; then
+        rm -rf "$temp_dir"
+        print_msg info "Temporary files removed."
+    else
+        print_msg info "Temporary files left at $temp_dir for inspection."
+    fi
+
+    # Step 6: Done
+    print_msg success "PhotoGIMP has been successfully installed to ${config_dirs[*]}!"
+    print_msg info "Launch GIMP to use the new Photoshop-like layout."
 }
 
 check_orphans() {
