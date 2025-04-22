@@ -219,9 +219,7 @@ enable_chaotic_aur() {
             sudo pacman-key --lsign-key "${CHAOTIC_KEY}"
             sudo pacman -U --noconfirm \
                 "${CHAOTIC_URL}/chaotic-keyring.pkg.tar.zst" \
-                "${CHAOTIC_URL}/chaotic-mirrorlist.pkg.tar.zst" || {
-                print_msg error "Failed to install Chaotic-AUR keyring/mirrorlist."
-            }
+                "${CHAOTIC_URL}/chaotic-mirrorlist.pkg.tar.zst" || print_msg error "Failed to install Chaotic-AUR keyring/mirrorlist."
             print_msg success "Chaotic-AUR keyring and mirrorlist installed"
         else
             print_msg success "Chaotic-AUR keyring already installed"
