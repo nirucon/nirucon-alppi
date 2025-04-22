@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # nirucon-alppi.sh - Arch Linux Post-Post Install Script
-# Date: 2025-04-20
+# Date: 2025-04-22
 # Author: Nicklas Rudolfsson
 # License: MIT
 # Description:
-#   Fully automated and user-friendly Arch Linux post-post installation script.
+#   A robust, user-friendly script for post-post installation on Arch Linux.
 #   Features:
-#     - Interactive menu with clear options
-#     - Safe modification of pacman.conf with backups and rollback
-#     - Robust Chaotic-AUR setup with validation
-#     - Install gaming stack (Steam, Vulkan, Wine, MangoHud, Corectrl, VKBasalt, Lutris)
-#     - Install productivity apps (LibreOffice, digiKam)
-#     - Install PhotoGIMP via GitHub
-#     - Install AUR packages (Proton-GE, linux-zen, dxvk-bin, goverlay)
+#     - Interactive, visually appealing menu
+#     - Safe pacman.conf modification with backups and rollback
+#     - Robust Chaotic-AUR setup with retries
+#     - Installs gaming stack (Steam, Vulkan, Wine, MangoHud, Corectrl, VKBasalt, Lutris)
+#     - Installs productivity apps (LibreOffice, digiKam)
+#     - Installs PhotoGIMP with version checks and dual-directory support
+#     - Installs AUR packages (Proton-GE, linux-zen, dxvk-bin, goverlay)
 #     - Optional system optimizations (ZRAM, gamemoded, linux-zen)
-#     - Support for systemd-boot and GRUB for linux-zen
-#     - Safety checks for sudo, internet, disk space, system status
+#     - Supports systemd-boot and GRUB for linux-zen
+#     - Comprehensive safety checks (sudo, internet, disk space, system status)
 #     - Package availability validation
 #     - Orphaned package cleanup and cache management
 
@@ -27,7 +27,10 @@ CHAOTIC_KEY="3056513887B78AEB"
 CHAOTIC_KEYSERVER="keyserver.ubuntu.com"
 CHAOTIC_URL="https://cdn-mirror.chaotic.cx/chaotic-aur"
 LOGFILE="/tmp/nirucon-alppi_$(date +%F_%H%M%S).log"
+ERROR_LOG="${LOGFILE}.errors"
+FAILED_LOG="${LOGFILE}.failed"
 MIN_DISK_SPACE_MB=2000  # Minimum disk space required in MB
+MAX_RETRIES=3  # Max retries for network operations
 
 # Colors
 if command -v tput &>/dev/null; then
@@ -35,20 +38,21 @@ if command -v tput &>/dev/null; then
     GREEN=$(tput setaf 2)
     YELLOW=$(tput setaf 3)
     BLUE=$(tput setaf 4)
+    MAGENTA=$(tput setaf 5)
     BOLD=$(tput bold)
     RESET=$(tput sgr0)
 else
-    RED='\e[31m'; GREEN='\e[32m'; YELLOW='\e[33m'; BLUE='\e[34m'; BOLD='\e[1m'; RESET='\e[0m'
+    RED='\e[31m'; GREEN='\e[32m'; YELLOW='\e[33m'; BLUE='\e[34m'; MAGENTA='\e[35m'; BOLD='\e[1m'; RESET='\e[0m'
 fi
 
-exec > >(tee -a "${LOGFILE}") 2>&1
+exec > >(tee -a "${LOGFILE}") 2> >(tee -a "${ERROR_LOG}" >&2)
 
 # Handle interrupts (Ctrl+C)
 cleanup() {
     print_msg warn "Script interrupted, cleaning up..."
     [[ -f "/tmp/pacman.conf.tmp" ]] && rm -f /tmp/pacman.conf.tmp
     [[ -d "/tmp/photogimp_temp" ]] && rm -rf /tmp/photogimp_temp
-    print_msg info "Exiting safely"
+    print_msg info "Exiting safely. Logs saved at $LOGFILE"
     exit 1
 }
 trap cleanup SIGINT SIGTERM
@@ -60,10 +64,12 @@ print_msg() {
         success) echo -e "${GREEN}${BOLD}[ OK  ]${RESET} $message";;
         warn)    echo -e "${YELLOW}${BOLD}[WARN ]${RESET} $message";;
         error)   echo -e "${RED}${BOLD}[FAIL ]${RESET} $message"; exit 1;;
+        prompt)  echo -e "${MAGENTA}${BOLD}[INPUT]${RESET} $message";;
     esac
 }
 
 check_sudo() {
+    print_msg info```bash
     print_msg info "Checking sudo privileges"
     if ! sudo -n true 2>/dev/null; then
         print_msg error "This script requires sudo privileges. Please run as a user with sudo access."
@@ -73,7 +79,15 @@ check_sudo() {
 
 check_internet() {
     print_msg info "Checking internet connection"
-    if ! ping -c 1 archlinux.org &>/dev/null; then
+    local endpoints=("archlinux.org" "google.com" "cloudflare.com")
+    local success=false
+    for endpoint in "${endpoints[@]}"; do
+        if ping -c 1 "$endpoint" &>/dev/null || curl -s --head --fail "https://$endpoint" &>/dev/null; then
+            success=true
+            break
+        fi
+    done
+    if [[ "$success" == false ]]; then
         print_msg error "No internet connection. Please connect and rerun."
     fi
     print_msg success "Internet connection verified"
@@ -89,12 +103,17 @@ check_system_status() {
 
 check_disk_space() {
     print_msg info "Checking available disk space"
-    local available_space
-    available_space=$(df -m / | tail -1 | awk '{print $4}')
-    if (( available_space < MIN_DISK_SPACE_MB )); then
-        print_msg error "Insufficient disk space (${available_space} MB available, ${MIN_DISK_SPACE_MB} MB required)."
-    fi
-    print_msg success "Sufficient disk space available (${available_space} MB)"
+    local filesystems=("/" "/home" "/tmp")
+    for fs in "${filesystems[@]}"; do
+        if [[ -d "$fs" ]]; then
+            local available_space
+            available_space=$(df -m "$fs" | tail -1 | awk '{print $4}')
+            if (( available_space < MIN_DISK_SPACE_MB )); then
+                print_msg error "Insufficient disk space in $fs (${available_space} MB available, ${MIN_DISK_SPACE_MB} MB required)."
+            fi
+            print_msg success "Sufficient disk space in $fs (${available_space} MB)"
+        fi
+    done
 }
 
 check_bootloader() {
@@ -108,6 +127,18 @@ check_bootloader() {
     else
         print_msg error "No supported bootloader (systemd-boot or GRUB) detected."
     fi
+}
+
+check_essential_tools() {
+    print_msg info "Checking essential tools"
+    local tools=(curl unzip lspci grep sed awk less)
+    for tool in "${tools[@]}"; do
+        if ! command -v "$tool" &>/dev/null; then
+            print_msg info "$tool is missing. Installing..."
+            sudo pacman -S --noconfirm --needed "${tool}" || print_msg error "Failed to install $tool."
+        fi
+    done
+    print_msg success "All essential tools verified"
 }
 
 backup_file() {
@@ -134,6 +165,17 @@ backup_configs() {
     print_msg info "Backing up pacman.conf and mirrorlist"
     backup_file /etc/pacman.conf
     backup_file /etc/pacman.d/mirrorlist
+}
+
+refresh_mirrorlist() {
+    print_msg info "Refreshing mirrorlist"
+    sudo pacman -Syy
+    if command -v reflector &>/dev/null; then
+        sudo reflector --country 'SE,DE,FR' --latest 10 --sort rate --save /etc/pacman.d/mirrorlist
+        print_msg success "Mirrorlist refreshed with reflector"
+    else
+        print_msg warn "reflector not found, using existing mirrorlist"
+    fi
 }
 
 enable_multilib() {
@@ -165,11 +207,22 @@ enable_chaotic_aur() {
     else
         print_msg info "Setting up Chaotic-AUR keyring and mirrorlist"
         if ! pacman -Q chaotic-keyring >/dev/null 2>&1; then
-            sudo pacman-key --recv-key "${CHAOTIC_KEY}" --keyserver "${CHAOTIC_KEYSERVER}"
+            local attempt=1
+            while [[ $attempt -le $MAX_RETRIES ]]; do
+                if sudo pacman-key --recv-key "${CHAOTIC_KEY}" --keyserver "${CHAOTIC_KEYSERVER}"; then
+                    break
+                fi
+                print_msg warn "Failed to retrieve Chaotic-AUR key (attempt $attempt/$MAX_RETRIES)"
+                ((attempt++))
+                sleep 2
+            done
+            [[ $attempt -le $MAX_RETRIES ]] || print_msg error "Failed to retrieve Chaotic-AUR key after $MAX_RETRIES attempts."
             sudo pacman-key --lsign-key "${CHAOTIC_KEY}"
             sudo pacman -U --noconfirm \
                 "${CHAOTIC_URL}/chaotic-keyring.pkg.tar.zst" \
-                "${CHAOTIC_URL}/chaotic-mirrorlist.pkg.tar.zst"
+                "${CHAOTIC_URL}/chaotic-mirrorlist.pkg.tar.zst" || {
+                print_msg error "Failed to install Chaotic-AUR keyring/mirrorlist."
+            }
             print_msg success "Chaotic-AUR keyring and mirrorlist installed"
         else
             print_msg success "Chaotic-AUR keyring already installed"
@@ -203,9 +256,9 @@ check_package_availability() {
     local failed_pkgs=()
     for pkg in "${pkgs[@]}"; do
         if [[ "$pkg_type" == "pacman" ]]; then
-            if ! pacman -Sp "$pkg" >/dev/null 2>&1; then
+            if ! pacman -Sp "$pkg" >/dev/null 2>>"${ERROR_LOG}"; then
                 print_msg warn "Package $pkg not found in pacman repositories, checking AUR"
-                if yay -Sp "$pkg" >/dev/null 2>&1; then
+                if yay -Sp "$pkg" >/dev/null 2>>"${ERROR_LOG}"; then
                     AUR_PKGS+=("$pkg")
                     GAMING_PKGS=("${GAMING_PKGS[@]/$pkg}")
                     PACMAN_PKGS=("${PACMAN_PKGS[@]/$pkg}")
@@ -214,13 +267,14 @@ check_package_availability() {
                 fi
             fi
         elif [[ "$pkg_type" == "aur" ]]; then
-            if ! yay -Sp "$pkg" >/dev/null 2>&1; then
+            if ! yay -Sp "$pkg" >/dev/null 2>>"${ERROR_LOG}"; then
                 failed_pkgs+=("$pkg")
             fi
         fi
     done
     if [[ ${#failed_pkgs[@]} -gt 0 ]]; then
         print_msg warn "Some packages not found: ${failed_pkgs[*]}. They will be skipped."
+        echo "Failed packages: ${failed_pkgs[*]}" >> "${FAILED_LOG}"
     fi
 }
 
@@ -228,19 +282,15 @@ review_aur_pkgbuild() {
     local pkg="$1"
     print_msg info "Reviewing PKGBUILD for $pkg"
     local pkgbuild_file="/tmp/PKGBUILD.$pkg"
-    yay -Gp "$pkg" > "$pkgbuild_file" 2>/dev/null
-    if [[ -s "$pkgbuild_file" ]]; then
-        if ! command -v less &>/dev/null; then
-            print_msg warn "less not found. Installing it now..."
-            sudo pacman -S --noconfirm --needed less || {
-                print_msg warn "Failed to install less, using cat to display PKGBUILD"
-                cat "$pkgbuild_file"
-            }
-        else
+    if yay -Gp "$pkg" > "$pkgbuild_file" 2>>"${ERROR_LOG}"; then
+        if [[ -s "$pkgbuild_file" ]]; then
             less "$pkgbuild_file"
+            print_msg prompt "Proceed with installation of $pkg? [y/N]: "
+            read -r answer
+            [[ "$answer" =~ ^[Yy]$ ]] || return 1
+        else
+            print_msg warn "PKGBUILD for $pkg is empty, proceeding without review"
         fi
-        read -p "Proceed with installation of $pkg? [y/N]: " answer
-        [[ "$answer" =~ ^[Yy]$ ]] || return 1
     else
         print_msg warn "Could not retrieve PKGBUILD for $pkg, proceeding without review"
     fi
@@ -255,7 +305,7 @@ install_pacman_pkgs() {
     print_msg info "Installing pacman packages: ${pkgs[*]}"
     local failed_pkgs=()
     for pkg in "${pkgs[@]}"; do
-        if ! sudo pacman -S --noconfirm --needed "$pkg" 2>/dev/null; then
+        if ! sudo pacman -S --noconfirm --needed "$pkg" 2>>"${ERROR_LOG}"; then
             print_msg warn "Failed to install $pkg, it may not exist in pacman repositories"
             failed_pkgs+=("$pkg")
         fi
@@ -264,7 +314,7 @@ install_pacman_pkgs() {
         print_msg success "Pacman packages installed"
     else
         print_msg warn "Some packages failed to install: ${failed_pkgs[*]}"
-        echo "Failed pacman packages: ${failed_pkgs[*]}" >> "${LOGFILE}.failed"
+        echo "Failed pacman packages: ${failed_pkgs[*]}" >> "${FAILED_LOG}"
     fi
 }
 
@@ -284,8 +334,11 @@ install_aur_pkgs() {
         fi
     done
     if [[ ${#filtered_pkgs[@]} -gt 0 ]]; then
-        yay -S --noconfirm --needed "${filtered_pkgs[@]}" || print_msg warn "Some AUR packages failed to install"
-        print_msg success "AUR packages installed"
+        if yay -S --noconfirm --needed "${filtered_pkgs[@]}" 2>>"${ERROR_LOG}"; then
+            print_msg success "AUR packages installed"
+        else
+            print_msg warn "Some AUR packages failed to install. Check $ERROR_LOG for details."
+        fi
     else
         print_msg info "No AUR packages selected for installation"
     fi
@@ -312,7 +365,8 @@ install_photogimp() {
     gimp_version=$(gimp --version | head -n1 | grep -o '[0-9]\.[0-9]*\.[0-9]*')
     if [[ "$gimp_version" != "2.10"* ]]; then
         print_msg warn "Detected GIMP version $gimp_version. PhotoGIMP is optimized for GIMP 2.10."
-        read -p "Proceed with installation? [y/N]: " answer
+        print_msg prompt "Proceed with installation? [y/N]: "
+        read -r answer
         [[ "$answer" =~ ^[Yy]$ ]] || {
             print_msg info "Aborting PhotoGIMP installation."
             return 1
@@ -331,11 +385,11 @@ install_photogimp() {
         fi
     done
 
-    # Check disk space (reuse MIN_DISK_SPACE_MB from script)
+    # Check disk space
     local available_space
     available_space=$(df -m "$user_home" | tail -1 | awk '{print $4}')
     if (( available_space < MIN_DISK_SPACE_MB )); then
-        print_msg error "Insufficient disk space (${available_space} MB available, ${MIN_DISK_SPACE_MB} MB required)."
+        print_msg error "Insufficient disk space in $user_home (${available_space} MB available, ${MIN_DISK_SPACE_MB} MB required)."
     fi
 
     # Step 2: Confirm overwrite of existing GIMP configs
@@ -348,7 +402,8 @@ install_photogimp() {
         fi
     done
     if [[ "$overwrite_needed" == true ]]; then
-        read -p "Overwrite existing GIMP configurations? [y/N]: " answer
+        print_msg prompt "Overwrite existing GIMP configurations? [y/N]: "
+        read -r answer
         [[ "$answer" =~ ^[Yy]$ ]] || {
             print_msg info "Aborting PhotoGIMP installation."
             return 1
@@ -363,14 +418,23 @@ install_photogimp() {
     }
     local photogimp_url="https://github.com/Diolinux/PhotoGIMP/archive/master.zip"
     print_msg info "Downloading PhotoGIMP from $photogimp_url..."
-    if ! curl -L --fail "$photogimp_url" -o "$temp_dir/PhotoGIMP.zip"; then
-        print_msg error "Failed to download PhotoGIMP zip. Check your internet connection."
+    local attempt=1
+    while [[ $attempt -le $MAX_RETRIES ]]; do
+        if curl -L --fail "$photogimp_url" -o "$temp_dir/PhotoGIMP.zip" 2>>"${ERROR_LOG}"; then
+            break
+        fi
+        print_msg warn "Failed to download PhotoGIMP (attempt $attempt/$MAX_RETRIES)"
+        ((attempt++))
+        sleep 2
+    done
+    [[ $attempt -le $MAX_RETRIES ]] || {
+        print_msg error "Failed to download PhotoGIMP zip after $MAX_RETRIES attempts."
         rm -rf "$temp_dir"
         return 1
     }
 
     print_msg info "Extracting archive..."
-    if ! unzip -q "$temp_dir/PhotoGIMP.zip" -d "$temp_dir"; then
+    if ! unzip -q "$temp_dir/PhotoGIMP.zip" -d "$temp_dir" 2>>"${ERROR_LOG}"; then
         print_msg error "Failed to extract PhotoGIMP archive."
         rm -rf "$temp_dir"
         return 1
@@ -386,21 +450,17 @@ install_photogimp() {
     # Step 4: Copy PhotoGIMP configuration to both target directories
     for target_dir in "${config_dirs[@]}"; do
         print_msg info "Copying PhotoGIMP configuration to $target_dir..."
-        # Ensure target directory exists
         mkdir -p "$(dirname "$target_dir")" || {
             print_msg error "Failed to create parent directory for $target_dir."
             rm -rf "$temp_dir"
             return 1
         }
-        # Remove existing GIMP config if present
         [[ -d "$target_dir" ]] && rm -rf "$target_dir"
-        # Copy files, preserving structure
         cp -r "$source_config" "$target_dir" || {
             print_msg error "Failed to copy PhotoGIMP configuration to $target_dir."
             rm -rf "$temp_dir"
             return 1
         }
-        # Fix ownership and permissions
         sudo chown -R "$user_name":"$user_name" "$target_dir" || {
             print_msg error "Failed to set ownership for $target_dir."
             rm -rf "$temp_dir"
@@ -414,7 +474,8 @@ install_photogimp() {
     done
 
     # Step 5: Cleanup
-    read -p "Remove temporary files at $temp_dir? [Y/n]: " cleanup_answer
+    print_msg prompt "Remove temporary files at $temp_dir? [Y/n]: "
+    read -r cleanup_answer
     if [[ ! "$cleanup_answer" =~ ^[Nn]$ ]]; then
         rm -rf "$temp_dir"
         print_msg info "Temporary files removed."
@@ -423,20 +484,21 @@ install_photogimp() {
     fi
 
     # Step 6: Done
-    print_msg success "PhotoGIMP has been successfully installed to ${config_dirs[*]}!"
+    print_msg success "PhotoGIMP installed to ${config_dirs[*]}!"
     print_msg info "Launch GIMP to use the new Photoshop-like layout."
 }
 
 check_orphans() {
     set +e
-    print_msg info "Checking for orphaned (unnecessary) packages"
+    print_msg info "Checking for orphaned packages"
     local orphans
     orphans=$(pacman -Qdtq)
     if [[ -z "$orphans" ]]; then
         print_msg success "No orphaned packages found"
     else
         print_msg warn "Found orphaned packages: $orphans"
-        read -p "Remove orphaned packages? [y/N]: " answer
+        print_msg prompt "Remove orphaned packages? [y/N]: "
+        read -r answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             for pkg in $orphans; do
                 if pacman -Q "$pkg" >/dev/null 2>&1; then
@@ -456,7 +518,8 @@ check_orphans() {
 
 clean_cache() {
     print_msg info "Checking package cache"
-    read -p "Clean pacman and yay cache? [y/N]: " answer
+    print_msg prompt "Clean pacman and yay cache? [y/N]: "
+    read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         sudo pacman -Sc --noconfirm
         yay -Sc --noconfirm
@@ -469,16 +532,22 @@ clean_cache() {
 update_bootloader() {
     if [[ "$1" == "linux-zen" ]]; then
         print_msg info "Updating bootloader for linux-zen"
-        read -p "Update bootloader to include linux-zen? [y/N]: " answer
+        print_msg prompt "Update bootloader to include linux-zen? [y/N]: "
+        read -r answer
         if [[ "$answer" =~ ^[Yy]$ ]]; then
             if [[ "$BOOTLOADER" == "systemd-boot" ]]; then
                 print_msg info "Configuring systemd-boot for linux-zen..."
+                local root_part=$(findmnt -n -o SOURCE / | cut -d'[' -f1)
+                local partuuid=$(blkid -s PARTUUID -o value "$root_part")
+                if [[ -z "$partuuid" ]]; then
+                    print_msg error "Could not determine PARTUUID for root partition."
+                fi
                 local entry="/boot/loader/entries/arch-zen.conf"
                 sudo bash -c "cat > $entry" << EOF
 title Arch Linux (Zen)
 linux /vmlinuz-linux-zen
 initrd /initramfs-linux-zen.img
-options root=PARTUUID=$(blkid -s PARTUUID -o value /dev/nvme0n1p2) rw
+options root=PARTUUID=$partuuid rw
 EOF
                 sudo bootctl install
                 print_msg success "systemd-boot updated. Select 'Arch Linux (Zen)' at boot."
@@ -522,46 +591,70 @@ AUR_PKGS=(
     goverlay
     hunspell-sv
 )
-if lspci | grep -i nvidia &>/dev/null; then
-    GAMING_PKGS+=(nvidia nvidia-utils lib32-nvidia-utils)
-elif lspci | grep -i amd &>/dev/null; then
-    GAMING_PKGS+=(mesa vulkan-radeon lib32-vulkan-radeon)
-elif lspci | grep -i intel &>/dev/null; then
-    GAMING_PKGS+=(mesa vulkan-intel lib32-vulkan-intel)
+
+# GPU detection
+if command -v lspci &>/dev/null; then
+    if lspci -k | grep -iE 'vga.*nvidia' &>/dev/null; then
+        GAMING_PKGS+=(nvidia nvidia-utils lib32-nvidia-utils)
+    elif lspci -k | grep -iE 'vga.*amd' &>/dev/null; then
+        GAMING_PKGS+=(mesa vulkan-radeon lib32-vulkan-radeon)
+    elif lspci -k | grep -iE 'vga.*intel' &>/dev/null; then
+        GAMING_PKGS+=(mesa vulkan-intel lib32-vulkan-intel)
+    else
+        print_msg warn "No supported GPU detected; installing generic mesa"
+        GAMING_PKGS+=(mesa)
+    fi
 else
-    print_msg warn "GPU not detected; installing generic mesa"
+    print_msg warn "lspci not found; installing generic mesa"
     GAMING_PKGS+=(mesa)
 fi
 
 show_menu() {
-    echo -e "${BLUE}${BOLD}Arch Linux Post-Post Install Menu${RESET}"
-    echo "1. Install all components (gaming, productivity, PhotoGIMP, AUR, optimizations)"
-    echo "2. Install gaming stack (Steam, Vulkan, Wine, etc.)"
-    echo "3. Install productivity apps (LibreOffice, digiKam)"
-    echo "4. Install PhotoGIMP and AUR packages (Proton-GE, linux-zen, etc.)"
-    echo "5. Enable system optimizations (ZRAM, gamemoded, linux-zen)"
-    echo "6. Check and remove orphaned packages"
-    echo "7. Clean package cache"
-    echo "8. Exit"
-    read -p "Select an option [1-8]: " choice
+    clear
+    echo -e "${BLUE}${BOLD}============================================================${RESET}"
+    echo -e "${GREEN}${BOLD}       Arch Linux Post-Post Install Script by Nicklas       ${RESET}"
+    echo -e "${BLUE}${BOLD}============================================================${RESET}"
+    echo -e "${YELLOW}Welcome! This script will help you set up your Arch Linux system.${RESET}"
+    echo -e "${YELLOW}Please select an option from the menu below:${RESET}\n"
+    echo -e "${BLUE}1.${RESET} Install all components (gaming, productivity, PhotoGIMP, AUR, optimizations)"
+    echo -e "${BLUE}2.${RESET} Install gaming stack (Steam, Vulkan, Wine, etc.)"
+    echo -e "${BLUE}3.${RESET} Install productivity apps (LibreOffice, digiKam)"
+    echo -e "${BLUE}4.${RESET} Install PhotoGIMP and AUR packages (Proton-GE, linux-zen, etc.)"
+    echo -e "${BLUE}5.${RESET} Enable system optimizations (ZRAM, gamemoded, linux-zen)"
+    echo -e "${BLUE}6.${RESET} Check and remove orphaned packages"
+    echo -e "${BLUE}7.${RESET} Clean package cache"
+    echo -e "${BLUE}8.${RESET} Exit"
+    echo -e "${BLUE}${BOLD}============================================================${RESET}"
+    print_msg prompt "Select an option [1-8]: "
+    read -r choice
 }
 
 enable_system_optimizations() {
     set +e
     print_msg info "Enabling system optimizations"
-    read -p "Enable gamemoded service for gaming performance? [y/N]: " answer
+    
+    # Check system specs for optimization suitability
+    local total_ram
+    total_ram=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    if (( total_ram < 8*1024*1024 )); then
+        print_msg info "Low RAM detected ($((total_ram/1024)) MB). ZRAM recommended."
+    fi
+
+    print_msg prompt "Enable gamemoded service for gaming performance? [y/N]: "
+    read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         if systemctl list-units --full | grep -q gamemoded.service; then
             sudo systemctl enable --now gamemoded
             print_msg success "gamemoded enabled"
         else
-            print_msg warn "gamemoded.service not found. Ensure gamemode is installed and configured."
+            print_msg warn "gamemoded.service not found. Ensure gamemode is installed."
         fi
     else
         print_msg info "Skipping gamemoded activation"
     fi
 
-    read -p "Enable ZRAM for memory compression? [y/N]: " answer
+    print_msg prompt "Enable ZRAM for memory compression? [y/N]: "
+    read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         sudo pacman -S --noconfirm zram-generator
         echo -e "[zram0]\nzram-size = ram / 2" | sudo tee /etc/systemd/zram-generator.conf
@@ -571,7 +664,8 @@ enable_system_optimizations() {
         print_msg info "Skipping ZRAM setup"
     fi
 
-    read -p "Enable irqbalance for network performance? [y/N]: " answer
+    print_msg prompt "Enable irqbalance for network performance? [y/N]: "
+    read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         sudo systemctl enable --now irqbalance
         print_msg success "irqbalance enabled"
@@ -582,7 +676,10 @@ enable_system_optimizations() {
 }
 
 main() {
-    print_msg info "Starting Arch post-post install script"
+    print_msg info "Starting Arch Linux post-post install script"
+
+    # Prompt for sudo password upfront
+    sudo -v || print_msg error "Failed to obtain sudo privileges."
 
     # Run safety checks
     check_sudo
@@ -590,12 +687,13 @@ main() {
     check_system_status
     check_disk_space
     check_bootloader
+    check_essential_tools
 
     # Keep sudo alive
-    sudo -v
     while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 
     backup_configs
+    refresh_mirrorlist
     enable_multilib
     enable_chaotic_aur
     check_yay
@@ -657,11 +755,13 @@ main() {
         esac
     done
 
-    print_msg success "All selected components installed"
-    echo -e "\n${GREEN}${BOLD}Done!${RESET} Review log at $LOGFILE"
-    if [[ -f "${LOGFILE}.failed" ]]; then
-        echo -e "${YELLOW}${BOLD}Note:${RESET} Some packages failed to install. Check ${LOGFILE}.failed for details."
+    print_msg success "All selected components installed!"
+    echo -e "\n${GREEN}${BOLD}🎉 Installation Complete!${RESET}"
+    echo -e "${BLUE}Logs saved at:${RESET} $LOGFILE"
+    if [[ -f "${FAILED_LOG}" ]]; then
+        echo -e "${YELLOW}${BOLD}⚠️ Note:${RESET} Some packages failed to install. Check ${FAILED_LOG} and ${ERROR_LOG} for details."
     fi
+    echo -e "${BLUE}${BOLD}============================================================${RESET}"
 }
 
 main
