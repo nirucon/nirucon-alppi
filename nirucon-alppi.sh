@@ -69,7 +69,6 @@ print_msg() {
 }
 
 check_sudo() {
-    print_msg info```bash
     print_msg info "Checking sudo privileges"
     if ! sudo -n true 2>/dev/null; then
         print_msg error "This script requires sudo privileges. Please run as a user with sudo access."
